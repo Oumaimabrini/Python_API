@@ -12,9 +12,75 @@ from pydantic import BaseModel
 
 
 from fastapi import WebSocket, WebSocketDisconnect
+import json 
+
+from contextlib import asynccontextmanager
+
+
 import json
-import asyncio  
-app = FastAPI()
+import websockets
+
+BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
+KRAKEN_WS_URL = "wss://ws.kraken.com"
+
+async def binance_orderbook_updater():
+    """Exemple simplifié de récupération d'un mini order book sur Binance."""
+    async with websockets.connect(BINANCE_WS_URL) as websocket:
+        async for message in websocket:
+            data = json.loads(message)
+            # data = { 'lastUpdateId':..., 'bids': [...], 'asks': [...] }
+            # On stocke seulement pour la paire BTCUSDT en l'occurrence:
+            try:
+                if "bids" in data and "asks" in data:
+                    # Standardisation dans le format interne
+                    order_books["binance"]["BTCUSDT"]["bids"] = data["bids"]
+                    order_books["binance"]["BTCUSDT"]["asks"] = data["asks"]
+            except Exception as e:
+                print(f"Erreur maj orderbook binance: {e}")
+
+async def kraken_orderbook_updater():
+    """
+    Exemple (très) simplifié de récupération de l'order book sur Kraken.
+    Vraiment très basique: on s'abonne à XBT/USD.
+    """
+    async with websockets.connect(KRAKEN_WS_URL) as websocket:
+        # Exemple de subscription au book pour XBT/USD
+        subscribe_message = {
+            "event": "subscribe",
+            "pair": ["XBT/USD"],
+            "subscription": {"name": "book", "depth": 5}
+        }
+        await websocket.send(json.dumps(subscribe_message))
+
+        async for message in websocket:
+            data = json.loads(message)
+            # Kraken renvoie des messages sous forme de liste
+            # ou d'event "system"
+            if isinstance(data, list) and len(data) > 1:
+                # On essaie d'extraire "bids" et "asks" si dispo
+                # Souvent, c'est data[1] qui contient le payload
+                payload = data[1]
+                # payload peut contenir "b" et "a"
+                # e.g. {'b': [['12345.1', '1.234', '1234567890']], 'a': [...], ...}
+                try:
+                    if "b" in payload:
+                        order_books["kraken"]["XBT/USD"]["bids"] = payload["b"]
+                    if "a" in payload:
+                        order_books["kraken"]["XBT/USD"]["asks"] = payload["a"]
+                except Exception as e:
+                    print(f"Erreur parsing kraken orderbook: {e}")
+
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    loop = asyncio.get_running_loop()
+    loop.create_task(binance_orderbook_updater())
+    loop.create_task(kraken_orderbook_updater())
+    yield  # Attente du shutdown
+
+app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
+
 
 
 # Stockage des WebSockets clients
@@ -129,10 +195,7 @@ class TokenBucket:
             return True
         return False
 
-### =========================================
-### Application FastAPI & Config de l'API
-### =========================================
-app = FastAPI(title="Crypto Data & Paper Trading API")
+
 
 API_KEY_NAME = "X-Token-ID"
 token_id_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
@@ -189,77 +252,6 @@ async def get_rate_limiter(request: Request, api_key: Optional[str] = Security(t
         )
 
     return rate_limiters[identifier], API_KEYS.get(api_key, {}).get("client_type", ClientType.ANONYMOUS)
-
-
-### =========================================
-### Tâches en arrière-plan: Connexion WebSocket
-### =========================================
-# Pour simplifier, on ne gère qu'une partie du flux (e.g. ordre book partial)
-import json
-import websockets
-
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
-KRAKEN_WS_URL = "wss://ws.kraken.com"
-
-async def binance_orderbook_updater():
-    """Exemple simplifié de récupération d'un mini order book sur Binance."""
-    async with websockets.connect(BINANCE_WS_URL) as websocket:
-        async for message in websocket:
-            data = json.loads(message)
-            # data = { 'lastUpdateId':..., 'bids': [...], 'asks': [...] }
-            # On stocke seulement pour la paire BTCUSDT en l'occurrence:
-            try:
-                if "bids" in data and "asks" in data:
-                    # Standardisation dans le format interne
-                    order_books["binance"]["BTCUSDT"]["bids"] = data["bids"]
-                    order_books["binance"]["BTCUSDT"]["asks"] = data["asks"]
-            except Exception as e:
-                print(f"Erreur maj orderbook binance: {e}")
-
-async def kraken_orderbook_updater():
-    """
-    Exemple (très) simplifié de récupération de l'order book sur Kraken.
-    Vraiment très basique: on s'abonne à XBT/USD.
-    """
-    async with websockets.connect(KRAKEN_WS_URL) as websocket:
-        # Exemple de subscription au book pour XBT/USD
-        subscribe_message = {
-            "event": "subscribe",
-            "pair": ["XBT/USD"],
-            "subscription": {"name": "book", "depth": 5}
-        }
-        await websocket.send(json.dumps(subscribe_message))
-
-        async for message in websocket:
-            data = json.loads(message)
-            # Kraken renvoie des messages sous forme de liste
-            # ou d'event "system"
-            if isinstance(data, list) and len(data) > 1:
-                # On essaie d'extraire "bids" et "asks" si dispo
-                # Souvent, c'est data[1] qui contient le payload
-                payload = data[1]
-                # payload peut contenir "b" et "a"
-                # e.g. {'b': [['12345.1', '1.234', '1234567890']], 'a': [...], ...}
-                try:
-                    if "b" in payload:
-                        order_books["kraken"]["XBT/USD"]["bids"] = payload["b"]
-                    if "a" in payload:
-                        order_books["kraken"]["XBT/USD"]["asks"] = payload["a"]
-                except Exception as e:
-                    print(f"Erreur parsing kraken orderbook: {e}")
-
-# On va lancer ces tâches en parallèle au démarrage de l'app
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    loop = asyncio.get_running_loop()
-    loop.create_task(binance_orderbook_updater())
-    loop.create_task(kraken_orderbook_updater())
-    yield  # Attente du shutdown
-
-app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
-
 
 
 ### =========================================
