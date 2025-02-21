@@ -10,18 +10,17 @@ from fastapi import FastAPI, Security, HTTPException, Request, Depends, Backgrou
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 
-
 from fastapi import WebSocket, WebSocketDisconnect
-import json 
+import json
 
 from contextlib import asynccontextmanager
-
 
 import json
 import websockets
 
 BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
 KRAKEN_WS_URL = "wss://ws.kraken.com"
+
 
 async def binance_orderbook_updater():
     """Exemple simplifié de récupération d'un mini order book sur Binance."""
@@ -37,6 +36,7 @@ async def binance_orderbook_updater():
                     order_books["binance"]["BTCUSDT"]["asks"] = data["asks"]
             except Exception as e:
                 print(f"Erreur maj orderbook binance: {e}")
+
 
 async def kraken_orderbook_updater():
     """
@@ -71,7 +71,6 @@ async def kraken_orderbook_updater():
                     print(f"Erreur parsing kraken orderbook: {e}")
 
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
@@ -79,12 +78,12 @@ async def lifespan(app: FastAPI):
     loop.create_task(kraken_orderbook_updater())
     yield  # Attente du shutdown
 
+
 app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
-
-
 
 # Stockage des WebSockets clients
 clients = []
+
 
 def get_top_10_levels(order_book):
     """ Récupère les 10 meilleurs niveaux (bids & asks) """
@@ -92,6 +91,7 @@ def get_top_10_levels(order_book):
         "bids": order_book["bids"][:10],
         "asks": order_book["asks"][:10]
     }
+
 
 @app.websocket("/ws/orderbook")
 async def websocket_orderbook(websocket: WebSocket):
@@ -106,7 +106,7 @@ async def websocket_orderbook(websocket: WebSocket):
                 snapshot[exchange] = {}
                 for pair, order_book in pairs.items():
                     snapshot[exchange][pair] = get_top_10_levels(order_book)
-            
+
             await websocket.send_text(json.dumps(snapshot))
             await asyncio.sleep(1)  # Envoi toutes les secondes
     except WebSocketDisconnect:
@@ -122,10 +122,12 @@ class ClientType(str, Enum):
     BASIC = "basic_client"
     PREMIUM = "premium_client"
 
+
 # TWAP side / type d'ordre
 class OrderSide(str, Enum):
     BUY = "buy"
     SELL = "sell"
+
 
 # Modèle d'ordre pour le paper-trading
 class TWAPOrderRequest(BaseModel):
@@ -137,10 +139,12 @@ class TWAPOrderRequest(BaseModel):
     duration_seconds: int
     slices: int  # nombre de 'tranches' dans la durée
 
+
 # Réponse de création d'ordre
 class TWAPOrderResponse(BaseModel):
     order_id: str
     message: str
+
 
 # Modèle d'information d'ordre
 class TWAPOrderStatus(BaseModel):
@@ -158,6 +162,7 @@ class TWAPOrderStatus(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
 # Réponse pour data
 class DataResponse(BaseModel):
     client_type: ClientType
@@ -166,8 +171,10 @@ class DataResponse(BaseModel):
     remaining_tokens: float
     rate_limit: float
 
+
 class StatusResponse(BaseModel):
     status: str
+
 
 class RegisterResponse(BaseModel):
     api_key: str
@@ -194,7 +201,6 @@ class TokenBucket:
             self.tokens -= 1
             return True
         return False
-
 
 
 API_KEY_NAME = "X-Token-ID"
@@ -238,12 +244,13 @@ for ex in SUPPORTED_EXCHANGES:
 # {order_id: {"request": TWAPOrderRequest, "status": {...}}}
 twap_orders: Dict[str, Dict] = {}
 
+
 ### =========================================
 ### Fonctions d’authentification & rate limiting
 ### =========================================
 async def get_rate_limiter(request: Request, api_key: Optional[str] = Security(token_id_header)):
     identifier = f"apikey_{api_key}" if api_key in API_KEYS else f"ip_{request.client.host}"
-    
+
     if identifier not in rate_limiters:
         client_type = API_KEYS[api_key]["client_type"] if api_key in API_KEYS else ClientType.ANONYMOUS
         rate_limiters[identifier] = TokenBucket(
@@ -268,9 +275,11 @@ async def register(client_type: ClientType):
     }
     return {"api_key": api_key, "client_type": client_type}
 
+
 @app.get("/status", response_model=StatusResponse)
 async def get_status():
     return {"status": "operational"}
+
 
 @app.get("/data", response_model=DataResponse)
 async def get_data(request: Request, api_key: Optional[str] = Security(token_id_header)):
@@ -286,6 +295,7 @@ async def get_data(request: Request, api_key: Optional[str] = Security(token_id_
         "rate_limit": rate_limiter.rate
     }
 
+
 ### =========================================
 ### Public Data Endpoints (Candles, Exchanges, Pairs)
 ### =========================================
@@ -297,6 +307,7 @@ async def list_exchanges():
     """
     return list(SUPPORTED_EXCHANGES.keys())
 
+
 @app.get("/exchanges/{exchange}/pairs", tags=["public"])
 async def list_pairs(exchange: str):
     """
@@ -306,13 +317,14 @@ async def list_pairs(exchange: str):
         raise HTTPException(status_code=404, detail="Exchange not supported")
     return SUPPORTED_EXCHANGES[exchange]
 
+
 # Simulation d'un endpoint pour récupérer des chandeliers
 # Ici, on n'a pas implémenté la logique de vrai stockage historique,
 # donc on retourne des données fictives pour illustrer
-#@app.get("/candlesticks", tags=["public"])
-@app.get("/klines/{exchange}/{symbol}", tags = ["public"])
-#async def get_candlesticks(exchange: str, pair: str, interval: str = "1m"):
-async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit : int = 5):
+# @app.get("/candlesticks", tags=["public"])
+@app.get("/klines/{exchange}/{symbol}", tags=["public"])
+# async def get_candlesticks(exchange: str, pair: str, interval: str = "1m"):
+async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit: int = 5):
     """
     Récupérer des bougies (candlesticks) d'un exchange donné et d'une paire donnée.
     Dans une vraie appli, vous stockeriez l'historique (par ex. dans une DB)
@@ -329,12 +341,12 @@ async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit : i
     for i in range(limit):
         # Génère du mock en remontant i bougies dans le passé
         candles.append([
-            now_ts - i*60,  # timestamp
-            23000 + i,      # open
-            23100 + i,      # high
-            22950 + i,      # low
-            23050 + i,      # close
-            round(5.0 + i*0.2, 3)  # volume
+            now_ts - i * 60,  # timestamp
+            23000 + i,  # open
+            23100 + i,  # high
+            22950 + i,  # low
+            23050 + i,  # close
+            round(5.0 + i * 0.2, 3)  # volume
         ])
     # Inverser la liste si vous voulez que la plus récente soit en dernier
     candles.reverse()
@@ -347,16 +359,17 @@ async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit : i
         "candles": candles
     }
 
+
 ### =========================================
 ### Paper Trading & TWAP
 ### =========================================
 
 @app.post("/orders/twap", response_model=TWAPOrderResponse)
 async def create_twap_order(
-    request: Request,
-    twap_request: TWAPOrderRequest,
-    background_tasks: BackgroundTasks,
-    api_key: Optional[str] = Security(token_id_header)
+        request: Request,
+        twap_request: TWAPOrderRequest,
+        background_tasks: BackgroundTasks,
+        api_key: Optional[str] = Security(token_id_header)
 ):
     """
     Soumet un ordre TWAP (Time-Weighted Average Price).
@@ -400,6 +413,7 @@ async def create_twap_order(
     background_tasks.add_task(execute_twap_order, order_id)
 
     return TWAPOrderResponse(order_id=order_id, message="TWAP order created")
+
 
 @app.get("/orders/{order_id}", response_model=TWAPOrderStatus)
 async def get_twap_order_status(order_id: str):
