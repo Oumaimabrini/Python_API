@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 from enum import Enum
-
+import aiohttp
 import uvicorn
 from fastapi import FastAPI, Security, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.security.api_key import APIKeyHeader
@@ -20,6 +20,8 @@ import websockets
 
 BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
 KRAKEN_WS_URL = "wss://ws.kraken.com"
+
+BASE_REST_SPOT_URL = "https://api.binance.com"
 
 
 async def binance_orderbook_updater():
@@ -322,38 +324,60 @@ async def list_pairs(exchange: str):
 # Ici, on n'a pas implémenté la logique de vrai stockage historique,
 # donc on retourne des données fictives pour illustrer
 # @app.get("/candlesticks", tags=["public"])
+async def get_historical_klines(session, symbol: str, interval: str = '1m', start_time: datetime = None,
+                                limit: int = 5):
+    """
+    Fetch historical kline data from Binance.
+    """
+    endpoint = "/api/v3/klines"
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'limit': limit
+    }
+
+    if start_time:
+        params['startTime'] = int(start_time.timestamp() * 1000)
+
+    try:
+        async with session.get(f"{BASE_REST_SPOT_URL}{endpoint}", params=params) as response:
+            if response.status == 200:
+                data = await response.json()
+
+                candles = [
+                    [
+                        int(k[0] / 1000),  # timestamp (convert from ms to s)
+                        float(k[1]),  # open
+                        float(k[2]),  # high
+                        float(k[3]),  # low
+                        float(k[4]),  # close
+                        float(k[5])  # volume
+                    ] for k in data
+                ]
+
+                return candles
+            else:
+                raise HTTPException(status_code=response.status, detail=f"Error fetching klines: {response.status}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Exception in fetching klines: {str(e)}")
+
+
 @app.get("/klines/{exchange}/{symbol}", tags=["public"])
-# async def get_candlesticks(exchange: str, pair: str, interval: str = "1m"):
 async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit: int = 5):
     """
-    Récupérer des bougies (candlesticks) d'un exchange donné et d'une paire donnée.
-    Dans une vraie appli, vous stockeriez l'historique (par ex. dans une DB)
-    et renverriez les bougies. Ici, on renvoie un petit mock.
+    Fetch real candlestick (kline) data from Binance.
     """
-    if exchange not in SUPPORTED_EXCHANGES:
+    if exchange.lower() not in SUPPORTED_EXCHANGES:
         raise HTTPException(status_code=404, detail="Exchange not supported")
-    if symbol not in SUPPORTED_EXCHANGES[exchange]:
+    if symbol.upper() not in SUPPORTED_EXCHANGES[exchange.lower()]:
         raise HTTPException(status_code=404, detail="Symbol not supported on this exchange")
 
-    # Exemple fictif de 5 bougies
-    now_ts = int(time.time())
-    candles = []
-    for i in range(limit):
-        # Génère du mock en remontant i bougies dans le passé
-        candles.append([
-            now_ts - i * 60,  # timestamp
-            23000 + i,  # open
-            23100 + i,  # high
-            22950 + i,  # low
-            23050 + i,  # close
-            round(5.0 + i * 0.2, 3)  # volume
-        ])
-    # Inverser la liste si vous voulez que la plus récente soit en dernier
-    candles.reverse()
+    async with aiohttp.ClientSession() as session:
+        candles = await get_historical_klines(session, symbol.upper(), interval, limit=limit)
 
     return {
-        "exchange": exchange,
-        "symbol": symbol,
+        "exchange": exchange.lower(),
+        "symbol": symbol.upper(),
         "interval": interval,
         "limit": limit,
         "candles": candles
