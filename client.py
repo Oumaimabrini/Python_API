@@ -13,7 +13,19 @@ class APIClient:
     def get_headers(self):
         """Get headers with API key for authenticated requests"""
         return {"X-Token-ID": self.api_key} if self.api_key else {}
-
+    def set_active_pair(self, exchange: str, pair: str):
+        """Définit la paire active pour l'exchange donné."""
+        try:
+            url = f"{self.base_url}/set_active_pair/{exchange}/{pair}"
+            response = requests.post(url, headers=self.get_headers())
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"Error setting active pair: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            print(f"Exception in set_active_pair: {e}")
+            return None
     def check_status(self):
         """Check if the API is running"""
         try:
@@ -107,17 +119,16 @@ class APIClient:
             return None
 
 
-async def websocket_orderbook():
-    """Connect to the WebSocket and listen for order book updates"""
-    uri = "ws://localhost:8000/ws/orderbook"
-
+async def websocket_orderbook(exchange: str):
+    """Connecte au WebSocket pour écouter l'order book de la paire active de l'exchange donné."""
+    uri = f"ws://localhost:8000/ws/orderbook/{exchange}"
     async with websockets.connect(uri) as websocket:
-        print("Connected to WebSocket order book stream.")
+        print(f"Connected to WebSocket order book stream for {exchange}.")
         try:
             while True:
                 data = await websocket.recv()
                 order_book = json.loads(data)
-                print(f" Order Book Update: {order_book}")
+                print(f"Order Book Update for {exchange}: {order_book}")
         except websockets.exceptions.ConnectionClosed:
             print("WebSocket connection closed.")
 
@@ -135,13 +146,17 @@ def test_api():
     print(f"Exchanges: {exchanges}")
 
     if exchanges:
-        exchange = exchanges[0]  # Select the first available exchange
+        exchange = exchanges[0]  # Sélectionne le premier exchange
         print(f"\n✅ Listing pairs for {exchange}...")
         pairs = client.list_pairs(exchange)
         print(f"Pairs: {pairs}")
 
         if pairs:
-            symbol = pairs[0]
+            symbol = pairs[0]  # Sélectionne la première paire
+            print(f"\n✅ Setting active pair for {exchange} to {symbol}...")
+            set_response = client.set_active_pair(exchange, symbol)
+            print(f"Set active pair response: {set_response}")
+
             print(f"\n✅ Fetching kline data for {exchange} - {symbol}...")
             kline_data = client.get_klines(exchange, symbol)
             print(f"Kline data: {kline_data}")
@@ -165,7 +180,8 @@ def test_api():
         print(f"Order Status: {order_status}")
 
     print("\n✅ Starting WebSocket listener for order book updates...")
-    asyncio.run(websocket_orderbook())
+    # Ici, on écoute l'order book ciblé pour le premier exchange
+    asyncio.run(websocket_orderbook("binance"))
 
 
 if __name__ == "__main__":
