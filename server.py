@@ -371,7 +371,6 @@ rate_limiters: Dict[str, TokenBucket] = {}
 # {order_id: {"request": TWAPOrderRequest, "status": {...}}}
 twap_orders: Dict[str, Dict] = {}
 
-
 ### =========================================
 ### Fonctions d’authentification & rate limiting
 ### =========================================
