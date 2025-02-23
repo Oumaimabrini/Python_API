@@ -72,14 +72,17 @@ with tab1:
             df['Price'] = pd.to_numeric(df['Price'])
             df['Size'] = pd.to_numeric(df['Size'])
             return df
+        
+        orderbook_placeholder = st.empty()  # Créer un conteneur vide
 
-        orderbook_placeholder = st.empty() 
-        # Vérifier si la file d'attente contient de nouvelles données de l'Order Book
         if not orderbook_queue.empty():
-            st.session_state["orderbook_data"] = orderbook_queue.get()
-            orderbook_placeholder.write(st.session_state["orderbook_data"])  # Affichage en temps réel
+            new_data = orderbook_queue.get()
+            st.session_state["orderbook_data"] = new_data  # Mettre à jour la session
 
-            st.experimental_rerun()  
+            # Mettre à jour l'affichage en temps réel
+            orderbook_placeholder.write(st.session_state["orderbook_data"])
+
+            st.experimental_rerun()  # Forcer Streamlit à recharger l'affichage  
 
 
         # Display order book if data is available
@@ -222,16 +225,21 @@ async def update_orderbook():
         async with websockets.connect(uri) as websocket:
             while True:
                 data = await websocket.recv()
-                parsed_data = json.loads(data)  # Stocke dans la queue
-                #time.sleep(1)
-                print("WebSocket reçu :", json.dumps(parsed_data, indent=2))
-                global orderbook_data
-                orderbook_data.update(parsed_data)
-                await asyncio.sleep(1)
+                parsed_data = json.loads(data)  # Convertir en JSON
+
+                # Stocker les données dans la queue pour mise à jour
+                orderbook_queue.put(parsed_data)
+                
+                # Afficher les mises à jour dans les logs
+                print("✅ Order Book reçu :", parsed_data)
+
+                await asyncio.sleep(1)  # Pause pour éviter la surcharge du WebSocket
     except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
-        print("Connexion WebSocket perdue. Tentative de reconnexion...")
+        print("⚠ Connexion WebSocket perdue. Tentative de reconnexion...")
         await asyncio.sleep(5)
         await update_orderbook()
+
+
 
 
 # Lancer l'update WebSocket en tâche de fond avec asyncio
@@ -249,10 +257,10 @@ def start_orderbook_updater():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(update_orderbook())
-    #asyncio.run(update_orderbook())
 
-# Lancer la mise à jour de l'orderbook dans un thread séparé
+# Lancer le WebSocket dans un thread sans bloquer Streamlit
 orderbook_thread = threading.Thread(target=start_orderbook_updater, daemon=True)
 orderbook_thread.start()
+
 
 
