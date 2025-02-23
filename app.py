@@ -7,22 +7,27 @@ import json
 import time
 from datetime import datetime, timedelta
 from client import APIClient
+import threading
+import queue
+
 
 #config de la page
 st.set_page_config(page_title="OrderBook Stream", layout="wide")
+
+orderbook_queue = queue.Queue()
 
 # Initialize session state
 if 'client' not in st.session_state:
     st.session_state.client = APIClient(base_url="http://localhost:8000")
 if 'orderbook_data' not in st.session_state:
     st.session_state.orderbook_data = {}
+
 if 'orders' not in st.session_state:
     st.session_state.orders = []
 if 'selected_exchange' not in st.session_state:
     st.session_state.selected_exchange = None
 if 'selected_pair' not in st.session_state:
     st.session_state.selected_pair = None
-
 
 
 st.title("Cryptocurrency Trading Dashboard")
@@ -67,6 +72,14 @@ with tab1:
             df['Price'] = pd.to_numeric(df['Price'])
             df['Size'] = pd.to_numeric(df['Size'])
             return df
+
+        orderbook_placeholder = st.empty() 
+        # Vérifier si la file d'attente contient de nouvelles données de l'Order Book
+        if not orderbook_queue.empty():
+            st.session_state["orderbook_data"] = orderbook_queue.get()
+            orderbook_placeholder.write(st.session_state["orderbook_data"])  # Affichage en temps réel
+
+            st.experimental_rerun()  
 
 
         # Display order book if data is available
@@ -201,26 +214,28 @@ with tab3:
 
 
 
-# Variable de session pour stocker les données
-if "orderbook_data" not in st.session_state:
-    st.session_state["orderbook_data"] = {}
 
+# Variable de session pour stocker les données
 async def update_orderbook():
     uri = "ws://localhost:8000/ws/orderbook"
-
     try:
         async with websockets.connect(uri) as websocket:
             while True:
                 data = await websocket.recv()
-                st.session_state["orderbook_data"] = json.loads(data)
-                st.experimental_rerun()  # Rafraîchir la page après réception
+                parsed_data = json.loads(data)  # Stocke dans la queue
+                #time.sleep(1)
+                print("WebSocket reçu :", json.dumps(parsed_data, indent=2))
+                global orderbook_data
+                orderbook_data.update(parsed_data)
+                await asyncio.sleep(1)
     except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
-        st.error("Connexion WebSocket perdue. Tentative de reconnexion...")
+        print("Connexion WebSocket perdue. Tentative de reconnexion...")
         await asyncio.sleep(5)
         await update_orderbook()
 
+
 # Lancer l'update WebSocket en tâche de fond avec asyncio
-asyncio.create_task(update_orderbook())
+#asyncio.create_task(update_orderbook())
 
 # Interface Streamlit
 st.title("OrderBook Live Updates")
@@ -228,14 +243,16 @@ st.write(st.session_state["orderbook_data"])
 
 
 # Run the WebSocket updater in the background
-import threading
+
 
 def start_orderbook_updater():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(update_orderbook())
+    #asyncio.run(update_orderbook())
 
 # Lancer la mise à jour de l'orderbook dans un thread séparé
 orderbook_thread = threading.Thread(target=start_orderbook_updater, daemon=True)
 orderbook_thread.start()
+
 
