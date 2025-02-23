@@ -146,6 +146,7 @@ def test_api():
     print(f"Exchanges: {exchanges}")
 
 
+
     if exchanges:
         exchange = exchanges[0]  # Sélectionne le premier exchange
         print(f"\n✅ Listing pairs for {exchange}...")
