@@ -8,6 +8,9 @@ import time
 from datetime import datetime, timedelta
 from client import APIClient
 
+#config de la page
+st.set_page_config(page_title="OrderBook Stream", layout="wide")
+
 # Initialize session state
 if 'client' not in st.session_state:
     st.session_state.client = APIClient(base_url="http://localhost:8000")
@@ -20,8 +23,8 @@ if 'selected_exchange' not in st.session_state:
 if 'selected_pair' not in st.session_state:
     st.session_state.selected_pair = None
 
-# Page configuration
-st.set_page_config(page_title="Crypto Trading Dashboard", layout="wide")
+
+
 st.title("Cryptocurrency Trading Dashboard")
 
 # Sidebar for API key and exchange selection
@@ -195,22 +198,44 @@ with tab3:
         st.info("No orders found")
 
 
-# WebSocket updater for order book
+
+
+
+# Variable de session pour stocker les données
+if "orderbook_data" not in st.session_state:
+    st.session_state["orderbook_data"] = {}
+
 async def update_orderbook():
     uri = "ws://localhost:8000/ws/orderbook"
 
-    while True:
-        try:
-            async with websockets.connect(uri) as websocket:
-                while True:
-                    data = await websocket.recv()
-                    st.session_state.orderbook_data = json.loads(data)
-                    time.sleep(1)  # Prevent too frequent updates
-        except Exception as e:
-            print(f"WebSocket error: {e}")
-            await asyncio.sleep(5)  # Wait before reconnecting
+    try:
+        async with websockets.connect(uri) as websocket:
+            while True:
+                data = await websocket.recv()
+                st.session_state["orderbook_data"] = json.loads(data)
+                st.experimental_rerun()  # Rafraîchir la page après réception
+    except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
+        st.error("Connexion WebSocket perdue. Tentative de reconnexion...")
+        await asyncio.sleep(5)
+        await update_orderbook()
+
+# Lancer l'update WebSocket en tâche de fond avec asyncio
+asyncio.create_task(update_orderbook())
+
+# Interface Streamlit
+st.title("OrderBook Live Updates")
+st.write(st.session_state["orderbook_data"])
 
 
 # Run the WebSocket updater in the background
-if __name__ == "__main__":
-    asyncio.run(update_orderbook())
+import threading
+
+def start_orderbook_updater():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(update_orderbook())
+
+# Lancer la mise à jour de l'orderbook dans un thread séparé
+orderbook_thread = threading.Thread(target=start_orderbook_updater, daemon=True)
+orderbook_thread.start()
+
