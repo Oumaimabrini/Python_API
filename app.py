@@ -205,12 +205,24 @@ async def update_orderbook():
                 while True:
                     data = await websocket.recv()
                     st.session_state.orderbook_data = json.loads(data)
-                    time.sleep(1)  # Prevent too frequent updates
+                    await asyncio.sleep(1)  # Prevent too frequent updates
+        except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
+            print("Connexion WebSocket perdue. Tentative de reconnexion dans 5 secondes...")
+            await asyncio.sleep(5)  # Attendre avant de réessayer
         except Exception as e:
-            print(f"WebSocket error: {e}")
-            await asyncio.sleep(5)  # Wait before reconnecting
+            print(f"Erreur inattendue WebSocket : {e}")
+            await asyncio.sleep(5)
 
 
 # Run the WebSocket updater in the background
-if __name__ == "__main__":
-    asyncio.run(update_orderbook())
+import threading
+
+def start_orderbook_updater():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(update_orderbook())
+
+# Lancer la mise à jour de l'orderbook dans un thread séparé
+orderbook_thread = threading.Thread(target=start_orderbook_updater, daemon=True)
+orderbook_thread.start()
+
