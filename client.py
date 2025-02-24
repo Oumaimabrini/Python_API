@@ -2,8 +2,10 @@ import requests
 import asyncio
 import websockets
 import json
+import queue
 from datetime import datetime
 
+orderbook_queue = queue.Queue()
 
 class APIClient:
     def __init__(self, base_url: str = "http://localhost:8000", api_key: str = None):
@@ -117,11 +119,29 @@ async def websocket_orderbook():
             while True:
                 data = await websocket.recv()
                 order_book = json.loads(data)
-                print(f" Order Book Update: {order_book}")
+                print(f"📩 Mise à jour Order Book reçue:\n{json.dumps(order_book, indent=4)}")
+                orderbook_queue.put(order_book)
         except websockets.exceptions.ConnectionClosed:
             print("WebSocket connection closed.")
+            await asyncio.sleep(5)
+            await websocket_orderbook()
 
+            
+def get_order_book(self, exchange: str, pair: str):
+    """Récupère l'order book via l'API REST si le WebSocket ne fonctionne pas."""
+    try:
+        response = requests.get(f"{self.base_url}/orderbook/{exchange}/{pair}")
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"❌ Erreur {response.status_code} lors de la récupération de l'order book.")
+            return None
 
+    except Exception as e:
+        print(f"❌ Erreur lors de la requête order book: {e}")
+        return None
+    
 def test_api():
     """Run tests on the API client"""
     client = APIClient(api_key="your_api_key_here")

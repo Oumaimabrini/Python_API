@@ -30,6 +30,8 @@ if 'selected_pair' not in st.session_state:
     st.session_state.selected_pair = None
 
 
+
+
 st.title("Cryptocurrency Trading Dashboard")
 
 # Sidebar for API key and exchange selection
@@ -56,12 +58,24 @@ with st.sidebar:
 # Main content area with tabs
 tab1, tab2, tab3 = st.tabs(["Market Data", "TWAP Trading", "Order History"])
 
+
 # Market Data Tab
 with tab1:
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("Order Book")
+
+        # Vérifier si des nouvelles données sont disponibles dans la queue
+        if not orderbook_queue.empty():
+            new_data = orderbook_queue.get()
+            st.session_state["orderbook_data"] = new_data  # Met à jour la session
+
+            st.write("✅ Mise à jour de l'order book reçue !")  # Debugging info
+            st.write(st.session_state["orderbook_data"])  # Debugging info
+
+            st.experimental_rerun()  # Forcer Streamlit à recharger l'affichage
+
 
 
         # Function to format order book data
@@ -205,6 +219,7 @@ with tab3:
             if status:
                 progress = status['executed_quantity'] / status['total_quantity'] * 100
                 st.progress(progress)
+
                 st.write(f"Order {order['order_id']}: {progress:.1f}% executed")
 
                 # Display detailed status
@@ -212,8 +227,6 @@ with tab3:
                 st.dataframe(status_df)
     else:
         st.info("No orders found")
-
-
 
 
 
@@ -227,11 +240,10 @@ async def update_orderbook():
                 data = await websocket.recv()
                 parsed_data = json.loads(data)  # Convertir en JSON
 
+                print("🟢 Streamlit Reçoit Order Book:", json.dumps(parsed_data, indent=4))
+
                 # Stocker les données dans la queue pour mise à jour
                 orderbook_queue.put(parsed_data)
-                
-                # Afficher les mises à jour dans les logs
-                print("✅ Order Book reçu :", parsed_data)
 
                 await asyncio.sleep(1)  # Pause pour éviter la surcharge du WebSocket
     except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
@@ -240,14 +252,15 @@ async def update_orderbook():
         await update_orderbook()
 
 
-
-
 # Lancer l'update WebSocket en tâche de fond avec asyncio
 #asyncio.create_task(update_orderbook())
 
 # Interface Streamlit
 st.title("OrderBook Live Updates")
+st.write("Debug Orderbook Data:", json.dumps(st.session_state.get("orderbook_data", "No data received"), indent=4))
+st.write("Debug Orderbook Data:", st.session_state.get("orderbook_data", "No data received"))
 st.write(st.session_state["orderbook_data"])
+st.write("Order Book Debug:", st.session_state.orderbook_data)
 
 
 # Run the WebSocket updater in the background
@@ -256,11 +269,12 @@ st.write(st.session_state["orderbook_data"])
 def start_orderbook_updater():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    print(" Lancement de la connexion WebSocket vers le serveur...")
     loop.run_until_complete(update_orderbook())
 
 # Lancer le WebSocket dans un thread sans bloquer Streamlit
 orderbook_thread = threading.Thread(target=start_orderbook_updater, daemon=True)
 orderbook_thread.start()
 
-
+print("🔄 Thread WebSocket lancé pour récupérer l'order book en temps réel")
 

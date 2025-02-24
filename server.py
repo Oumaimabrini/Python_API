@@ -30,14 +30,13 @@ async def binance_orderbook_updater():
         async for message in websocket:
             data = json.loads(message)
             # data = { 'lastUpdateId':..., 'bids': [...], 'asks': [...] }
-            # On stocke seulement pour la paire BTCUSDT en l'occurrence:
-            try:
-                if "bids" in data and "asks" in data:
-                    # Standardisation dans le format interne
-                    order_books["binance"]["BTCUSDT"]["bids"] = data["bids"]
-                    order_books["binance"]["BTCUSDT"]["asks"] = data["asks"]
-            except Exception as e:
-                print(f"Erreur maj orderbook binance: {e}")
+            # On stocke seulement pour la paire BTCUSDT en l'occurrence
+            if "bids" in data and "asks" in data:
+                # Standardisation dans le format interne
+                order_books["binance"]["BTCUSDT"]["bids"] = data["bids"]
+                order_books["binance"]["BTCUSDT"]["asks"] = data["asks"]
+                print("🔄 Mise à jour Binance Order Book :", json.dumps(order_books["binance"]["BTCUSDT"], indent=4))
+                
 
 
 async def kraken_orderbook_updater():
@@ -55,6 +54,9 @@ async def kraken_orderbook_updater():
         await websocket.send(json.dumps(subscribe_message))
 
         async for message in websocket:
+
+            print("📩 Kraken Message Reçu:", message)
+
             data = json.loads(message)
             # Kraken renvoie des messages sous forme de liste
             # ou d'event "system"
@@ -64,15 +66,14 @@ async def kraken_orderbook_updater():
                 payload = data[1]
                 # payload peut contenir "b" et "a"
                 # e.g. {'b': [['12345.1', '1.234', '1234567890']], 'a': [...], ...}
-                try:
-                    if "b" in payload:
-                        order_books["kraken"]["XBT/USD"]["bids"] = payload["b"]
-                    if "a" in payload:
-                        order_books["kraken"]["XBT/USD"]["asks"] = payload["a"]
-                except Exception as e:
-                    print(f"Erreur parsing kraken orderbook: {e}")
 
-
+                if "b" in payload:
+                    order_books["kraken"]["XBT/USD"]["bids"] = payload["b"]
+                if "a" in payload:
+                    order_books["kraken"]["XBT/USD"]["asks"] = payload["a"]
+                print("🔄 Mise à jour Kraken Order Book :", json.dumps(order_books["kraken"]["XBT/USD"], indent=4))
+                
+                
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
@@ -108,6 +109,9 @@ async def websocket_orderbook(websocket: WebSocket):
                 snapshot[exchange] = {}
                 for pair, order_book in pairs.items():
                     snapshot[exchange][pair] = get_top_10_levels(order_book)
+            
+            print("✅ WebSocket - Envoi de l'Order Book :", json.dumps(snapshot, indent=4))
+
 
             await websocket.send_text(json.dumps(snapshot))
             await asyncio.sleep(1)  # Envoi toutes les secondes
@@ -230,10 +234,12 @@ SUPPORTED_EXCHANGES = {
 
 # Stockage en mémoire de l'order book
 # Structure: order_books[exchange][pair] = {"bids": [...], "asks": [...]}
+# ✅ Vérifier que order_books est bien défini avant toute utilisation
 order_books: Dict[str, Dict[str, Dict[str, List]]] = {
-    "binance": {},
-    "kraken": {}
+    "binance": {"BTCUSDT": {"bids": [], "asks": []}},
+    "kraken": {"XBT/USD": {"bids": [], "asks": []}}
 }
+
 
 for ex in SUPPORTED_EXCHANGES:
     for pair in SUPPORTED_EXCHANGES[ex]:
