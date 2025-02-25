@@ -18,66 +18,76 @@ from contextlib import asynccontextmanager
 import json
 import websockets
 
-BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
+# BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
+BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth10"
 KRAKEN_WS_URL = "wss://ws.kraken.com"
 
 BASE_REST_SPOT_URL = "https://api.binance.com"
+BASE_REST_KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
+
+BINANCE_PAIRS = ["BTCUSDT", "ETHUSDT"]
+KRAKEN_PAIRS = ["XBTUSD", "ETHUSD"]
+KRAKEN_WS_PAIRS = ["XBT/USD", "ETH/USD"]
+
+KRAKEN_MAPPING = {
+    'XBTUSD': 'XXBTZUSD',
+    'ETHUSD': 'XETHZUSD'
+}
 
 
-async def binance_orderbook_updater():
-    """Exemple simplifié de récupération d'un mini order book sur Binance."""
-    async with websockets.connect(BINANCE_WS_URL) as websocket:
+async def binance_orderbook_updater(pair):
+    url = f"wss://stream.binance.com:9443/ws/{pair.lower()}@depth10"
+    async with websockets.connect(url) as websocket:
         async for message in websocket:
             data = json.loads(message)
-            # data = { 'lastUpdateId':..., 'bids': [...], 'asks': [...] }
-            # On stocke seulement pour la paire BTCUSDT en l'occurrence
             if "bids" in data and "asks" in data:
-                # Standardisation dans le format interne
-                order_books["binance"]["BTCUSDT"]["bids"] = data["bids"]
-                order_books["binance"]["BTCUSDT"]["asks"] = data["asks"]
-                print("🔄 Mise à jour Binance Order Book :", json.dumps(order_books["binance"]["BTCUSDT"], indent=4))
-                
+                order_books["binance"][pair]["bids"] = data["bids"]
+                order_books["binance"][pair]["asks"] = data["asks"]
+                print(f"🔄 Mise à jour Binance Order Book {pair} :", json.dumps(order_books["binance"][pair], indent=4))
+            # await asyncio.sleep(60)
+
+
+async def start_binance_orderbooks():
+    # Créer une tâche pour chaque paire de Binance
+    tasks = [binance_orderbook_updater(pair) for pair in BINANCE_PAIRS]
+    await asyncio.gather(*tasks)
 
 
 async def kraken_orderbook_updater():
-    """
-    Exemple (très) simplifié de récupération de l'order book sur Kraken.
-    Vraiment très basique: on s'abonne à XBT/USD.
-    """
     async with websockets.connect(KRAKEN_WS_URL) as websocket:
-        # Exemple de subscription au book pour XBT/USD
         subscribe_message = {
             "event": "subscribe",
-            "pair": ["XBT/USD"],
-            "subscription": {"name": "book", "depth": 5}
+            "pair": KRAKEN_WS_PAIRS,
+            "subscription": {"name": "book", "depth": 10}
         }
         await websocket.send(json.dumps(subscribe_message))
 
         async for message in websocket:
-
             print("📩 Kraken Message Reçu:", message)
-
             data = json.loads(message)
-            # Kraken renvoie des messages sous forme de liste
-            # ou d'event "system"
-            if isinstance(data, list) and len(data) > 1:
-                # On essaie d'extraire "bids" et "asks" si dispo
-                # Souvent, c'est data[1] qui contient le payload
-                payload = data[1]
-                # payload peut contenir "b" et "a"
-                # e.g. {'b': [['12345.1', '1.234', '1234567890']], 'a': [...], ...}
 
+            if isinstance(data, list) and len(data) > 1:
+                payload = data[1]  # Payload contenant les ordres
+                pair = data[-1]  # Dernier élément = paire ("XBT/USD" ou "ETH/USD")
+
+                # Initialiser l'order book si nécessaire
+                if pair not in order_books["kraken"]:
+                    order_books["kraken"][pair] = {"bids": [], "asks": []}
+
+                # Mise à jour des bids et asks
                 if "b" in payload:
-                    order_books["kraken"]["XBT/USD"]["bids"] = payload["b"]
+                    order_books["kraken"][pair]["bids"] = payload["b"]
                 if "a" in payload:
-                    order_books["kraken"]["XBT/USD"]["asks"] = payload["a"]
-                print("🔄 Mise à jour Kraken Order Book :", json.dumps(order_books["kraken"]["XBT/USD"], indent=4))
-                
-                
+                    order_books["kraken"][pair]["asks"] = payload["a"]
+
+                print(f"🔄 Mise à jour Kraken Order Book {pair} :", json.dumps(order_books["kraken"][pair], indent=4))
+            # await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
-    loop.create_task(binance_orderbook_updater())
+    loop.create_task(start_binance_orderbooks())
     loop.create_task(kraken_orderbook_updater())
     yield  # Attente du shutdown
 
@@ -103,17 +113,24 @@ async def websocket_orderbook(websocket: WebSocket):
     clients.append(websocket)
     try:
         while True:
-            # Vérifie si `order_books` est bien défini
+            # Extraire les données de chaque exchange/pair
             snapshot = {}
             for exchange, pairs in order_books.items():
                 snapshot[exchange] = {}
                 for pair, order_book in pairs.items():
-                    snapshot[exchange][pair] = get_top_10_levels(order_book)
-            
-            print("✅ WebSocket - Envoi de l'Order Book :", json.dumps(snapshot, indent=4))
+                    if "bids" in order_book and "asks" in order_book and order_book["bids"] and order_book["asks"]:
+                        snapshot[exchange][pair] = {
+                            "bids": order_book["bids"],
+                            "asks": order_book["asks"]
+                        }
 
+            # Envoyer seulement si des données sont disponibles
+            if any(pairs for pairs in snapshot.values()):
+                print("✅ WebSocket - Envoi de l'Order Book actualisé")
+                await websocket.send_text(json.dumps(snapshot))
+            else:
+                print("⚠️ Pas de données d'order book à envoyer")
 
-            await websocket.send_text(json.dumps(snapshot))
             await asyncio.sleep(1)  # Envoi toutes les secondes
     except WebSocketDisconnect:
         clients.remove(websocket)
@@ -225,11 +242,11 @@ rate_limiters: Dict[str, TokenBucket] = {}
 ### & Paper Trading
 ### =========================================
 
-# Liste "hardcodée" des échanges et paires supportées 
+# Liste "hardcodée" des échanges et paires supportées
 # (à ajuster selon nos besoins)
 SUPPORTED_EXCHANGES = {
-    "binance": ["BTCUSDT", "ETHUSDT"],
-    "kraken": ["XBT/USD", "ETH/USD"]
+    "binance": BINANCE_PAIRS,
+    "kraken": KRAKEN_PAIRS
 }
 
 # Stockage en mémoire de l'order book
@@ -239,7 +256,6 @@ order_books: Dict[str, Dict[str, Dict[str, List]]] = {
     "binance": {"BTCUSDT": {"bids": [], "asks": []}},
     "kraken": {"XBT/USD": {"bids": [], "asks": []}}
 }
-
 
 for ex in SUPPORTED_EXCHANGES:
     for pair in SUPPORTED_EXCHANGES[ex]:
@@ -330,8 +346,77 @@ async def list_pairs(exchange: str):
 # Ici, on n'a pas implémenté la logique de vrai stockage historique,
 # donc on retourne des données fictives pour illustrer
 # @app.get("/candlesticks", tags=["public"])
-async def get_historical_klines(session, symbol: str, interval: str = '1m', start_time: datetime = None,
-                                limit: int = 5):
+async def get_kraken_klines(session: aiohttp.ClientSession, symbol: str, interval: str = "1m", limit: int = 5,
+                            start_time: Optional[datetime] = None):
+    """
+    Fetch historical kline data from Kraken and format it to match the Binance format.
+    """
+    kraken_symbol = symbol.upper()
+
+    if kraken_symbol not in KRAKEN_MAPPING:
+        raise HTTPException(status_code=400, detail=f"Unsupported symbol for Kraken: {kraken_symbol}")
+
+    # Convert Binance interval format to Kraken interval format
+    interval_mapping = {
+        "1m": "1",
+        "5m": "5",
+        "15m": "15",
+        "30m": "30",
+        "1h": "60",
+        "3h": "180",
+        "6h": "360",
+        "12h": "720",
+        "1d": "1440",
+        "3d": "4320",
+        "1w": "10080"
+    }
+
+    kraken_interval = interval_mapping.get(interval, "60")  # Default to 1h if interval not found
+
+    params = {
+        'pair': KRAKEN_MAPPING[kraken_symbol],
+        'interval': kraken_interval,
+        'count': limit
+    }
+
+    if start_time:
+        params['since'] = int(start_time.timestamp())
+
+    try:
+        async with session.get(BASE_REST_KRAKEN_URL, params=params) as response:
+            if response.status == 200:
+                data = await response.json()
+
+                if "result" in data and KRAKEN_MAPPING[kraken_symbol] in data["result"]:
+                    candles = [
+                        [
+                            int(k[0]),  # timestamp
+                            float(k[1]),  # open
+                            float(k[2]),  # high
+                            float(k[3]),  # low
+                            float(k[4]),  # close
+                            float(k[6])  # volume (Kraken uses k[6] instead of k[5])
+                        ] for k in data["result"][KRAKEN_MAPPING[kraken_symbol]]
+                    ]
+
+                    return candles[:limit]  # Return just the list of candles
+                else:
+                    error_msg = f"Symbol not supported on Kraken or data not found: {data}"
+                    print(error_msg)
+                    raise HTTPException(status_code=404, detail=error_msg)
+            else:
+                error_msg = f"Error fetching Kraken klines: Status {response.status}"
+                print(error_msg)
+                raw_response = await response.text()
+                print(f"Raw response: {raw_response}")
+                raise HTTPException(status_code=response.status, detail=error_msg)
+    except Exception as e:
+        error_msg = f"Exception in fetching Kraken klines: {str(e)}"
+        print(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+async def get_binance_klines(session, symbol: str, interval: str = '1m', start_time: datetime = None, limit: int = 5):
     """
     Fetch historical kline data from Binance.
     """
@@ -363,31 +448,54 @@ async def get_historical_klines(session, symbol: str, interval: str = '1m', star
 
                 return candles
             else:
-                raise HTTPException(status_code=response.status, detail=f"Error fetching klines: {response.status}")
+                raise HTTPException(status_code=response.status,
+                                    detail=f"Error fetching binance klines: {response.status}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Exception in fetching klines: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Exception in fetching binance klines: {str(e)}")
 
 
 @app.get("/klines/{exchange}/{symbol}", tags=["public"])
-async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit: int = 5):
+async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit: int = 100):
     """
-    Fetch real candlestick (kline) data from Binance.
+    Fetch real candlestick (kline) data from Binance or Kraken.
     """
     if exchange.lower() not in SUPPORTED_EXCHANGES:
-        raise HTTPException(status_code=404, detail="Exchange not supported")
+        raise HTTPException(status_code=404, detail=f"Exchange not supported: {exchange}")
+
+    # Check if the symbol is supported for this exchange
     if symbol.upper() not in SUPPORTED_EXCHANGES[exchange.lower()]:
-        raise HTTPException(status_code=404, detail="Symbol not supported on this exchange")
+        raise HTTPException(status_code=404, detail=f"Symbol {symbol} not supported on {exchange}")
 
-    async with aiohttp.ClientSession() as session:
-        candles = await get_historical_klines(session, symbol.upper(), interval, limit=limit)
+    try:
+        async with aiohttp.ClientSession() as session:
+            if exchange.lower() == "binance":
+                candles = await get_binance_klines(session, symbol.upper(), interval, None, limit)
+            elif exchange.lower() == "kraken":
+                candles = await get_kraken_klines(session, symbol.upper(), interval, limit)
+            else:
+                raise HTTPException(status_code=404, detail=f"Exchange not supported: {exchange}")
 
-    return {
-        "exchange": exchange.lower(),
-        "symbol": symbol.upper(),
-        "interval": interval,
-        "limit": limit,
-        "candles": candles
-    }
+        # Standardize the format for frontend consumption
+        formatted_candles = []
+        for candle in candles:
+            formatted_candles.append({
+                "timestamp": candle[0],
+                "open": float(candle[1]),
+                "high": float(candle[2]),
+                "low": float(candle[3]),
+                "close": float(candle[4]),
+                "volume": float(candle[5])
+            })
+
+        return {
+            "exchange": exchange.lower(),
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "candles": formatted_candles
+        }
+    except Exception as e:
+        print(f"Error in get_klines: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching klines: {str(e)}")
 
 
 ### =========================================

@@ -10,8 +10,7 @@ from client import APIClient
 import threading
 import queue
 
-
-#config de la page
+# config de la page
 st.set_page_config(page_title="OrderBook Stream", layout="wide")
 
 orderbook_queue = queue.Queue()
@@ -28,9 +27,6 @@ if 'selected_exchange' not in st.session_state:
     st.session_state.selected_exchange = None
 if 'selected_pair' not in st.session_state:
     st.session_state.selected_pair = None
-
-
-
 
 st.title("Cryptocurrency Trading Dashboard")
 
@@ -55,9 +51,13 @@ with st.sidebar:
             if selected_pair != st.session_state.selected_pair:
                 st.session_state.selected_pair = selected_pair
 
+    # Add interval selection dropdown
+    intervals = ["1m", "5m", "15m", "30m", "1h", "3h", "6h", "12h", "1d", "3d", "1w"]
+    selected_interval = st.selectbox("Select Kline Interval", intervals, index=0)
+    st.session_state.selected_interval = selected_interval  # Store the selected interval
+
 # Main content area with tabs
 tab1, tab2, tab3 = st.tabs(["Market Data", "TWAP Trading", "Order History"])
-
 
 # Market Data Tab
 with tab1:
@@ -70,12 +70,8 @@ with tab1:
         if not orderbook_queue.empty():
             new_data = orderbook_queue.get()
             st.session_state["orderbook_data"] = new_data  # Met à jour la session
-
             st.write("✅ Mise à jour de l'order book reçue !")  # Debugging info
-            st.write(st.session_state["orderbook_data"])  # Debugging info
-
             st.experimental_rerun()  # Forcer Streamlit à recharger l'affichage
-
 
 
         # Function to format order book data
@@ -86,18 +82,14 @@ with tab1:
             df['Price'] = pd.to_numeric(df['Price'])
             df['Size'] = pd.to_numeric(df['Size'])
             return df
-        
+
+
         orderbook_placeholder = st.empty()  # Créer un conteneur vide
 
         if not orderbook_queue.empty():
             new_data = orderbook_queue.get()
             st.session_state["orderbook_data"] = new_data  # Mettre à jour la session
-
-            # Mettre à jour l'affichage en temps réel
-            orderbook_placeholder.write(st.session_state["orderbook_data"])
-
-            st.experimental_rerun()  # Forcer Streamlit à recharger l'affichage  
-
+            orderbook_placeholder.write(st.session_state["orderbook_data"])  # Mise à jour en temps réel
 
         # Display order book if data is available
         if (st.session_state.selected_exchange in st.session_state.orderbook_data and
@@ -105,8 +97,8 @@ with tab1:
             ob_data = st.session_state.orderbook_data[st.session_state.selected_exchange][
                 st.session_state.selected_pair]
 
-            bids_df = format_orderbook(ob_data.get('bids', []), 'bid')
-            asks_df = format_orderbook(ob_data.get('asks', []), 'ask')
+            bids_df = format_orderbook(ob_data.get('bids', []))
+            asks_df = format_orderbook(ob_data.get('asks', []))
 
             if not bids_df.empty and not asks_df.empty:
                 fig = go.Figure()
@@ -135,36 +127,49 @@ with tab1:
                 )
 
                 st.plotly_chart(fig, use_container_width=True)
-
     with col2:
         st.subheader("Price Chart")
-        # Fetch and display kline data
+        # Fetch and display kline data using the selected interval
         if st.session_state.selected_exchange and st.session_state.selected_pair:
-            kline_data = st.session_state.client.get_klines(
-                st.session_state.selected_exchange,
-                st.session_state.selected_pair,
-                interval="1m",
-                limit=1000
-            )
-
-            if kline_data and 'candles' in kline_data:
-                df = pd.DataFrame(kline_data['candles'],
-                                  columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-
-                fig = go.Figure(data=[go.Candlestick(x=df['timestamp'],
-                                                     open=df['open'],
-                                                     high=df['high'],
-                                                     low=df['low'],
-                                                     close=df['close'])])
-
-                fig.update_layout(
-                    title=f"{st.session_state.selected_pair} Price Chart",
-                    yaxis_title='Price',
-                    xaxis_title='Time'
+            try:
+                kline_data = st.session_state.client.get_klines(
+                    st.session_state.selected_exchange,
+                    st.session_state.selected_pair,
+                    interval=st.session_state.selected_interval,
+                    limit=100
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                if kline_data and 'candles' in kline_data:
+                    # Create a DataFrame from the candles data
+                    df = pd.DataFrame(kline_data['candles'])
+
+                    # Convert timestamp to datetime
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+
+                    # Create Plotly candlestick chart
+                    fig = go.Figure(data=[go.Candlestick(
+                        x=df['timestamp'],
+                        open=df['open'],
+                        high=df['high'],
+                        low=df['low'],
+                        close=df['close']
+                    )])
+
+                    fig.update_layout(
+                        title=f"{st.session_state.selected_pair} Price Chart ({st.session_state.selected_interval})",
+                        yaxis_title='Price',
+                        xaxis_title='Time',
+                        xaxis_rangeslider_visible=False  # Hide the range slider for a cleaner look
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+                else:
+                    st.warning(
+                        f"No kline data available for {st.session_state.selected_pair} on {st.session_state.selected_exchange}")
+                    st.write("Debug info:", kline_data)
+            except Exception as e:
+                st.error(f"Error fetching kline data: {str(e)}")
 
 # TWAP Trading Tab
 with tab2:
@@ -229,8 +234,6 @@ with tab3:
         st.info("No orders found")
 
 
-
-
 # Variable de session pour stocker les données
 async def update_orderbook():
     uri = "ws://localhost:8000/ws/orderbook"
@@ -253,7 +256,7 @@ async def update_orderbook():
 
 
 # Lancer l'update WebSocket en tâche de fond avec asyncio
-#asyncio.create_task(update_orderbook())
+# asyncio.create_task(update_orderbook())
 
 # Interface Streamlit
 st.title("OrderBook Live Updates")
@@ -272,9 +275,9 @@ def start_orderbook_updater():
     print(" Lancement de la connexion WebSocket vers le serveur...")
     loop.run_until_complete(update_orderbook())
 
+
 # Lancer le WebSocket dans un thread sans bloquer Streamlit
 orderbook_thread = threading.Thread(target=start_orderbook_updater, daemon=True)
 orderbook_thread.start()
 
 print("🔄 Thread WebSocket lancé pour récupérer l'order book en temps réel")
-
