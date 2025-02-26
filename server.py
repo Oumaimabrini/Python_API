@@ -9,8 +9,9 @@ import uvicorn
 from fastapi import FastAPI, Security, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
+import requests
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 import json
 
 from contextlib import asynccontextmanager
@@ -21,7 +22,6 @@ import websockets
 # BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
 BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth10"
 KRAKEN_WS_URL = "wss://ws.kraken.com"
-
 BASE_REST_SPOT_URL = "https://api.binance.com"
 BASE_REST_KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
 
@@ -93,6 +93,77 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
+
+# Stocke la paire active pour chaque exchange
+active_pair = {
+    "binance": None,
+    "kraken": None
+}
+# Stocke les Order Books
+order_books = {
+    "binance": {},
+    "kraken": {}
+}
+
+@app.post("/set_active_pair/{exchange}/{pair}")
+async def set_active_pair(exchange: str, pair: str):
+    """Définit la paire active pour l'exchange spécifié."""
+    exchange = exchange.lower()
+    pair = pair.upper()
+
+    if exchange not in active_pair:
+        raise HTTPException(status_code=400, detail="Exchange non supporté")
+
+    active_pair[exchange] = pair
+    order_books.setdefault(exchange, {})[pair] = {"bids": [], "asks": []}
+
+    return {"message": f"Paire active pour {exchange} mise à jour à {pair}"}
+
+@app.websocket("/ws/orderbook/{exchange}")
+async def websocket_orderbook(websocket: WebSocket, exchange: str):
+    """WebSocket qui envoie l'Order Book de la paire active uniquement."""
+    await websocket.accept()
+    exchange = exchange.lower()
+
+    try:
+        while True:
+            pair = active_pair.get(exchange)
+            ob = order_books.get(exchange, {}).get(pair, {"bids": [], "asks": []})
+            await websocket.send_text(json.dumps(ob))
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        pass
+
+class APIClient:
+    def __init__(self, base_url="http://localhost:8000", api_key=None):
+        self.base_url = base_url
+        self.api_key = api_key
+
+    def get_headers(self):
+        return {"X-Token-ID": self.api_key} if self.api_key else {}
+
+    def set_active_pair(self, exchange: str, pair: str):
+        """Définit la paire active pour l'exchange donné."""
+        try:
+            url = f"{self.base_url}/set_active_pair/{exchange}/{pair}"
+            response = requests.post(url, headers=self.get_headers())
+            return response.json() if response.status_code == 200 else None
+        except Exception as e:
+            print(f"Exception in set_active_pair: {e}")
+            return None
+
+    async def websocket_orderbook(self, exchange: str):
+        """Connecte au WebSocket pour suivre l'order book de la paire active."""
+        uri = f"ws://localhost:8000/ws/orderbook/{exchange}"
+        async with websockets.connect(uri) as websocket:
+            print(f"Connected to WebSocket order book stream for {exchange}.")
+            try:
+                while True:
+                    data = await websocket.recv()
+                    print(f"Order Book Update for {exchange}: {data}")
+            except websockets.exceptions.ConnectionClosed:
+                print("WebSocket connection closed.")
+
 
 # Stockage des WebSockets clients
 clients = []
