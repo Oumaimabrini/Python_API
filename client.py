@@ -113,7 +113,7 @@ class APIClient:
 async def websocket_orderbook():
     """Connect to the WebSocket and listen for order book updates"""
     uri = "ws://localhost:8000/ws/orderbook"
-
+    # uri = "ws://localhost:8000/orderbook" #TODO a voir
     async with websockets.connect(uri) as websocket:
         print("Connected to WebSocket order book stream.")
         try:
