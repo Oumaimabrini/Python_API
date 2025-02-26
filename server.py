@@ -15,8 +15,6 @@ from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 import json
 
 from contextlib import asynccontextmanager
-
-import json
 import websockets
 
 # BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
@@ -32,6 +30,22 @@ KRAKEN_WS_PAIRS = ["XBT/USD", "ETH/USD"]
 KRAKEN_MAPPING = {
     'XBTUSD': 'XXBTZUSD',
     'ETHUSD': 'XETHZUSD'
+}
+
+# Définition unique de order_books
+order_books: Dict[str, Dict[str, Dict[str, List]]] = {
+    "binance": {},
+    "kraken": {}
+}
+
+# Initialiser les paires
+for exchange in ["binance", "kraken"]:
+    for pair in (BINANCE_PAIRS if exchange == "binance" else KRAKEN_PAIRS):
+        order_books[exchange][pair] = {"bids": [], "asks": []}
+# Stocke la paire active pour chaque exchange
+active_pair = {
+    "binance": None,
+    "kraken": None
 }
 
 async def binance_orderbook_updater(pair):
@@ -84,7 +98,7 @@ async def kraken_orderbook_updater():
                     order_books["kraken"][pair]["asks"] = payload["a"]
 
                 print(f"🔄 Mise à jour Kraken Order Book {pair} :", json.dumps(order_books["kraken"][pair], indent=4))
-            # await asyncio.sleep(60)
+          
 
 
 @asynccontextmanager
@@ -97,10 +111,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
 
-order_books = {
-    "binance": {},
-    "kraken": {}
-}
+@app.get("/orderbook/{exchange}/{pair}")
+async def get_orderbook(exchange: str, pair: str):
+    # On lit la variable globale unique order_books
+    if exchange not in order_books:
+        raise HTTPException(status_code=404, detail="Exchange not found")
+    if pair not in order_books[exchange]:
+        raise HTTPException(status_code=404, detail="Pair not found")
+    return order_books[exchange][pair]
+
+# WebSocket global : renvoie toutes les paires
+@app.websocket("/ws/orderbook")
+async def websocket_orderbook_global(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            snapshot = {}
+            for exch, pairs_data in order_books.items():
+                snapshot[exch] = {}
+                for p, ob in pairs_data.items():
+                    if ob["bids"] and ob["asks"]:
+                        snapshot[exch][p] = {
+                            "bids": ob["bids"],
+                            "asks": ob["asks"]
+                        }
+            if any(snapshot[exch] for exch in snapshot):
+                print("Envoi snapshot order_books")
+                await websocket.send_text(json.dumps(snapshot))
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        pass
 
 # Assure-toi que les paires existent AVANT de démarrer WebSocket
 for exchange in ["binance", "kraken"]:
@@ -116,16 +156,8 @@ orderbook_data = {
         "ETHUSDT": {"bids": [], "asks": []},
     }
 }
-# Stocke la paire active pour chaque exchange
-active_pair = {
-    "binance": None,
-    "kraken": None
-}
-# Stocke les Order Books
-order_books = {
-    "binance": {},
-    "kraken": {}
-}
+
+
 
 @app.post("/set_active_pair/{exchange}/{pair}")
 async def set_active_pair(exchange: str, pair: str):
@@ -143,22 +175,7 @@ async def set_active_pair(exchange: str, pair: str):
 
 
 
-@app.get("/orderbook/{exchange}/{pair}")
-async def get_orderbook(exchange: str, pair: str):
-    """ Retourne l'order book actuel d'une paire sur un exchange. """
-    
-    print(f"🔍 DEBUG: OrderBook request for {exchange} - {pair}")
-    print(f"📊 DEBUG: Contenu actuel de order_books[{exchange}]: {json.dumps(order_books.get(exchange, {}), indent=4)}")
 
-    if exchange not in order_books:
-        print(f"❌ DEBUG: Exchange {exchange} not found in order_books")
-        raise HTTPException(status_code=404, detail="Not Found")
-
-    if pair not in order_books[exchange]:
-        print(f"❌ DEBUG: Pair {pair} not found in order_books[{exchange}]")
-        raise HTTPException(status_code=404, detail="Not Found")
-
-    return order_books[exchange][pair]
 
 
 class APIClient:
@@ -217,35 +234,6 @@ async def websocket_orderbook(websocket: WebSocket, exchange: str):
             await asyncio.sleep(1)
     except WebSocketDisconnect:
         pass
-    
-@app.websocket("/ws/orderbook")
-async def websocket_orderbook(websocket: WebSocket):
-    """ WebSocket permettant aux clients de recevoir l'order book en temps réel """
-    await websocket.accept()
-    clients.append(websocket)
-    try:
-        while True:
-            # Extraire les données de chaque exchange/pair
-            snapshot = {}
-            for exchange, pairs in order_books.items():
-                snapshot[exchange] = {}
-                for pair, order_book in pairs.items():
-                    if "bids" in order_book and "asks" in order_book and order_book["bids"] and order_book["asks"]:
-                        snapshot[exchange][pair] = {
-                            "bids": order_book["bids"],
-                            "asks": order_book["asks"]
-                        }
-
-            # Envoyer seulement si des données sont disponibles
-            if any(pairs for pairs in snapshot.values()):
-                print("✅ WebSocket - Envoi de l'Order Book actualisé")
-                await websocket.send_text(json.dumps(snapshot))
-            else:
-                print("⚠️ Pas de données d'order book à envoyer")
-
-            await asyncio.sleep(1)  # Envoi toutes les secondes
-    except WebSocketDisconnect:
-        clients.remove(websocket)
 
 
 ### =========================
@@ -361,13 +349,7 @@ SUPPORTED_EXCHANGES = {
     "kraken": KRAKEN_PAIRS
 }
 
-# Stockage en mémoire de l'order book
-# Structure: order_books[exchange][pair] = {"bids": [...], "asks": [...]}
-# ✅ Vérifier que order_books est bien défini avant toute utilisation
-order_books: Dict[str, Dict[str, Dict[str, List]]] = {
-    "binance": {"BTCUSDT": {"bids": [], "asks": []}},
-    "kraken": {"XBT/USD": {"bids": [], "asks": []}}
-}
+
 
 for ex in SUPPORTED_EXCHANGES:
     for pair in SUPPORTED_EXCHANGES[ex]:
