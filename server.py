@@ -141,20 +141,7 @@ async def set_active_pair(exchange: str, pair: str):
 
     return {"message": f"Paire active pour {exchange} mise à jour à {pair}"}
 
-@app.websocket("/ws/orderbook/{exchange}")
-async def websocket_orderbook(websocket: WebSocket, exchange: str):
-    """WebSocket qui envoie l'Order Book de la paire active uniquement."""
-    await websocket.accept()
-    exchange = exchange.lower()
 
-    try:
-        while True:
-            pair = active_pair.get(exchange)
-            ob = order_books.get(exchange, {}).get(pair, {"bids": [], "asks": []})
-            await websocket.send_text(json.dumps(ob))
-            await asyncio.sleep(1)
-    except WebSocketDisconnect:
-        pass
 
 @app.get("/orderbook/{exchange}/{pair}")
 async def get_orderbook(exchange: str, pair: str):
@@ -216,7 +203,21 @@ def get_top_10_levels(order_book):
         "asks": order_book["asks"][:10]
     }
 
+@app.websocket("/ws/orderbook/{exchange}")
+async def websocket_orderbook(websocket: WebSocket, exchange: str):
+    """WebSocket qui envoie l'Order Book de la paire active uniquement."""
+    await websocket.accept()
+    exchange = exchange.lower()
 
+    try:
+        while True:
+            pair = active_pair.get(exchange)
+            ob = order_books.get(exchange, {}).get(pair, {"bids": [], "asks": []})
+            await websocket.send_text(json.dumps(ob))
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        pass
+    
 @app.websocket("/ws/orderbook")
 async def websocket_orderbook(websocket: WebSocket):
     """ WebSocket permettant aux clients de recevoir l'order book en temps réel """
