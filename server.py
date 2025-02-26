@@ -34,17 +34,20 @@ KRAKEN_MAPPING = {
     'ETHUSD': 'XETHZUSD'
 }
 
-
 async def binance_orderbook_updater(pair):
     url = f"wss://stream.binance.com:9443/ws/{pair.lower()}@depth10"
     async with websockets.connect(url) as websocket:
         async for message in websocket:
             data = json.loads(message)
             if "bids" in data and "asks" in data:
-                order_books["binance"][pair]["bids"] = data["bids"]
-                order_books["binance"][pair]["asks"] = data["asks"]
-                print(f"🔄 Mise à jour Binance Order Book {pair} :", json.dumps(order_books["binance"][pair], indent=4))
-            # await asyncio.sleep(60)
+                order_books["binance"][pair] = {
+                    "bids": data["bids"],
+                    "asks": data["asks"]
+                }
+
+                # Ajoute ce print pour voir si l'orderbook est mis à jour :
+                print(f"🔄 DEBUG ORDERBOOK Binance {pair} :", json.dumps(order_books["binance"][pair], indent=4))
+
 
 
 async def start_binance_orderbooks():
@@ -94,6 +97,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
 
+order_books = {
+    "binance": {},
+    "kraken": {}
+}
+
+# Assure-toi que les paires existent AVANT de démarrer WebSocket
+for exchange in ["binance", "kraken"]:
+    for pair in (BINANCE_PAIRS if exchange == "binance" else KRAKEN_PAIRS):
+        if pair not in order_books[exchange]:
+            order_books[exchange][pair] = {"bids": [], "asks": []}
+
+
+
+orderbook_data = {
+    "binance": {
+        "BTCUSDT": {"bids": [], "asks": []},
+        "ETHUSDT": {"bids": [], "asks": []},
+    }
+}
 # Stocke la paire active pour chaque exchange
 active_pair = {
     "binance": None,
@@ -133,6 +155,24 @@ async def websocket_orderbook(websocket: WebSocket, exchange: str):
             await asyncio.sleep(1)
     except WebSocketDisconnect:
         pass
+
+@app.get("/orderbook/{exchange}/{pair}")
+async def get_orderbook(exchange: str, pair: str):
+    """ Retourne l'order book actuel d'une paire sur un exchange. """
+    
+    print(f"🔍 DEBUG: OrderBook request for {exchange} - {pair}")
+    print(f"📊 DEBUG: Contenu actuel de order_books[{exchange}]: {json.dumps(order_books.get(exchange, {}), indent=4)}")
+
+    if exchange not in order_books:
+        print(f"❌ DEBUG: Exchange {exchange} not found in order_books")
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    if pair not in order_books[exchange]:
+        print(f"❌ DEBUG: Pair {pair} not found in order_books[{exchange}]")
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    return order_books[exchange][pair]
+
 
 class APIClient:
     def __init__(self, base_url="http://localhost:8000", api_key=None):

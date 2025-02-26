@@ -9,6 +9,10 @@ from datetime import datetime, timedelta
 from client import APIClient
 import threading
 import queue
+from fastapi import FastAPI
+import requests
+
+app = FastAPI()
 
 # config de la page
 st.set_page_config(page_title="OrderBook Stream", layout="wide")
@@ -56,6 +60,17 @@ with st.sidebar:
     selected_interval = st.selectbox("Select Kline Interval", intervals, index=0)
     st.session_state.selected_interval = selected_interval  # Store the selected interval
 
+@app.get("/orderbook/{exchange}/{pair}")      
+async def get_orderbook(exchange: str, pair: str):
+    """Récupère l'order book en temps réel depuis Binance."""
+    url = f"https://api.binance.com/api/v3/depth?symbol={pair}&limit=5"
+
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        return {"error": f"Erreur API Binance: {response.status_code}"}
+    
 # Main content area with tabs
 tab1, tab2, tab3 = st.tabs(["Market Data", "TWAP Trading", "Order History"])
 
@@ -69,9 +84,11 @@ with tab1:
         # Vérifier si des nouvelles données sont disponibles dans la queue
         if not orderbook_queue.empty():
             new_data = orderbook_queue.get()
-            st.session_state["orderbook_data"] = new_data  # Met à jour la session
+    
+         # Vérification que les données existent avant la mise à jour
+        if new_data:
+            st.session_state.orderbook_data = new_data
             st.write("✅ Mise à jour de l'order book reçue !")  # Debugging info
-            st.experimental_rerun()  # Forcer Streamlit à recharger l'affichage
 
 
         # Function to format order book data
@@ -89,7 +106,11 @@ with tab1:
         if not orderbook_queue.empty():
             new_data = orderbook_queue.get()
             st.session_state["orderbook_data"] = new_data  # Mettre à jour la session
-            orderbook_placeholder.write(st.session_state["orderbook_data"])  # Mise à jour en temps réel
+            if "bids" in st.session_state.orderbook_data and "asks" in st.session_state.orderbook_data:
+                orderbook_placeholder.write(st.session_state.orderbook_data)
+            else:
+                st.warning("⚠️ Aucune donnée disponible dans l'order book")
+
 
         # Display order book if data is available
         if (st.session_state.selected_exchange in st.session_state.orderbook_data and
@@ -281,3 +302,13 @@ orderbook_thread = threading.Thread(target=start_orderbook_updater, daemon=True)
 orderbook_thread.start()
 
 print("🔄 Thread WebSocket lancé pour récupérer l'order book en temps réel")
+
+
+async def test_websocket():
+    uri = "ws://127.0.0.1:8000/ws/orderbook"
+    async with websockets.connect(uri) as websocket:
+        while True:
+            data = await websocket.recv()
+            print("Données reçues depuis WebSocket:", json.loads(data))
+
+asyncio.run(test_websocket())
