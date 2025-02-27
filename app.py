@@ -8,7 +8,6 @@ import time
 from datetime import datetime, timedelta
 import threading
 import queue
-import requests
 
 from streamlit_autorefresh import st_autorefresh
 from client import APIClient

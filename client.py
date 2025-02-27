@@ -3,7 +3,6 @@ import asyncio
 import websockets
 import json
 import queue
-from datetime import datetime
 
 orderbook_queue = queue.Queue()
 
