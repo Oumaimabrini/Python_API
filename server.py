@@ -79,35 +79,42 @@ async def kraken_orderbook_updater():
         }
         await websocket.send(json.dumps(subscribe_message))
 
+        def normalize_pair(pair: str) -> str:
+                    # Convertit "XBT/USD" en "XBTUSD"
+                    return pair.replace("/", "")
+        
         async for message in websocket:
             data = json.loads(message)
 
             if isinstance(data, list) and len(data) > 1:
                 payload = data[1]  # Payload contenant les ordres
                 pair = data[-1]  # Dernier élément = paire ("XBT/USD" ou "ETH/USD")
+                normalized_pair = normalize_pair(pair)
+
+
 
                 # Initialiser l'order book si nécessaire
-                if pair not in order_books["kraken"]:
-                    order_books["kraken"][pair] = {"bids": [], "asks": []}
+                if normalized_pair not in order_books["kraken"]:
+                    order_books["kraken"][normalized_pair] = {"bids": [], "asks": []}
 
                 # Mise à jour des bids et asks
                 #TODO j'ai mis bs et as car c'est ce que rend ws, à voir comment régler ça
                 if "b"in payload or "bs" in payload:
                     # order_books["kraken"][pair]["bids"] = payload["b"]
-                    order_books["kraken"][pair]["bids"] = [s[:2] for s in payload["bs"]] if "bs" in payload else [s[:2]
+                    order_books["kraken"][normalized_pair]["bids"] = [s[:2] for s in payload["bs"]] if "bs" in payload else [s[:2]
                                                                                                                   for s
                                                                                                                   in
                                                                                                                   payload[
                                                                                                                       "b"]]
                 if "a"in payload or "as" in payload:
                     # order_books["kraken"][pair]["asks"] = payload["a"]
-                    order_books["kraken"][pair]["asks"] = [s[:2] for s in payload["as"]] if "as" in payload else [s[:2]
+                    order_books["kraken"][normalized_pair]["asks"] = [s[:2] for s in payload["as"]] if "as" in payload else [s[:2]
                                                                                                                   for s
                                                                                                                   in
                                                                                                                   payload[
                                                                                                                       "a"]]
 
-                print(f"🔄 Mise à jour Kraken Order Book {pair} :", json.dumps(order_books["kraken"][pair], indent=4))
+                print(f"🔄 Mise à jour Kraken Order Book {normalized_pair} :", json.dumps(order_books["kraken"][normalized_pair], indent=4))
 
 
 @asynccontextmanager
