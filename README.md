@@ -1,10 +1,10 @@
 # Cryptocurrency Market Data & TWAP Paper Trading API
 
-Ce projet propose une plateforme complète de paper trading (simulation d’ordres) basée sur des stratégies d’exécution TWAP (Time-Weighted Average Price) appliquées à des flux de données de marchés réels de cryptomonnaies. L’objectif principal est de collecter et normaliser des carnets d’ordres (order books) depuis plusieurs places d’échange (ex. : Binance, Kraken), puis de simuler l’exécution d’ordres selon différents paramètres (quantité totale, durée, prix limite, etc.).
+Ce projet propose une plateforme complète de **paper trading** (simulation d’ordres) basée sur des stratégies d’exécution **TWAP** (Time-Weighted Average Price) appliquées à des flux de données de marchés réels de **cryptomonnaies**. L’objectif principal est de collecter et normaliser des **carnets d’ordres** (order books) depuis plusieurs places d’échange (ex. : *Binance, Kraken*), puis de simuler l’exécution d’ordres selon différents paramètres (quantité totale, durée, prix limite, etc.).
 
 # 1. Structure du projet
 
-## server.py
+## `server.py`
 
 - Implémente un serveur REST et WebSocket via FastAPI.
 - Se connecte en temps réel aux API WebSocket de Binance et Kraken afin de récupérer et maintenir en mémoire le carnet d’ordres.
@@ -12,13 +12,13 @@ Ce projet propose une plateforme complète de paper trading (simulation d’ordr
 - Implémente des endpoints protégés pour soumettre et suivre des ordres TWAP.
 - Utilise un système basique de rate limiting pour gérer plusieurs types de clients (ANONYMOUS, BASIC, PREMIUM).
 
-## client.py
+## `client.py`
 
 - Fournit une classe APIClient en Python pour interagir facilement avec les endpoints du serveur.
 - Montre comment se connecter aux routes REST (status, klines, TWAP, etc.) et comment souscrire au WebSocket pour recevoir le carnet d’ordres en direct.
 - Contient une fonction asynchrone websocket_orderbook qui écoute les mises à jour du carnet d’ordres (order book) transmises par le serveur.
 
-## app.py (interface utilisateur Streamlit)
+## `app.py` (interface utilisateur Streamlit)
 
 - Offre une interface graphique simple (dashboard) pour :
 - Configurer son API Key, sélectionner un exchange et une paire.
