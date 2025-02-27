@@ -45,12 +45,57 @@ POST /orders/twap : crée un nouvel ordre TWAP.
 GET /orders/{order_id} : récupère le statut détaillé d’un ordre.
 TWAP (Time-Weighted Average Price) Paper Trading
 
-# 3. Lancer le code
+# 3. Guide d'exécution
 
-## Requirements
-Importer et charger les librairies nécessaires au projet en runnant la commande suivante dans le terminal : 
-pip install -r requirements.txt
+Ce projet comprend un serveur backend et une application frontend utilisant Streamlit. Pour exécuter correctement l'application, il est nécessaire de lancer simultanément les fichiers server.py et app.py.
 
-## 
+## Prérequis
+
+Avant de démarrer, assurez-vous d'avoir :
+
+- Python installé
+
+- Streamlit installé :
+
+`pip install streamlit`
+
+- Toutes les dépendances nécessaires installées :
+
+`pip install -r requirements.txt`
+
+## Lancer l'application
+
+Pour exécuter l'application, ouvrez un terminal et exécutez la commande suivante :
+
+`python server.py & streamlit run app.py`
+
+### Explication :
+
+- `python server.py` & : Lance le serveur backend en tâche de fond.
+
+- `streamlit run app.py` : Démarre l'application frontend Streamlit.
+
+Une fois l'application démarrée, vous pourrez y accéder via l'URL affichée dans le terminal (généralement `http://localhost:8501`).
+
+## Arrêter l'application
+
+Pour arrêter l'application, utilisez :
+
+- Sous Windows : `Ctrl + C` deux fois
+
+- Sous macOS/Linux : `Ctrl + C`
+
+Si le processus du serveur tourne toujours en arrière-plan, vous pouvez l'arrêter avec :
+
+`pkill -f server.py`
+
+(sous macOS/Linux) ou en fermant le terminal.
+
+## Dépannage
+
+- Si une erreur indique qu'un port est déjà utilisé, vérifiez qu'aucune autre instance du serveur n'est déjà en cours d'exécution.
+
+- Si Streamlit ne se lance pas, assurez-vous qu'il est bien installé (`pip install streamlit`).
+
 
 
