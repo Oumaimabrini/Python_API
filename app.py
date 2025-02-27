@@ -88,7 +88,6 @@ with tab1:
                             st.session_state.orderbook_data[st.session_state.selected_exchange] = {}
                         st.session_state.orderbook_data[st.session_state.selected_exchange][
                             st.session_state.selected_pair] = ob_data
-                        # st.info("📊 Order book récupéré via REST API")
                     else:
                         st.warning("🚨 Impossible de récupérer l'order book")
                 else:
@@ -101,9 +100,9 @@ with tab1:
         def format_orderbook(data):
             if not data:
                 return pd.DataFrame()
-            df = pd.DataFrame(data, columns=['Price', 'Size'])
+            df = pd.DataFrame(data, columns=['Price', 'Volume'])
             df['Price'] = pd.to_numeric(df['Price'])
-            df['Size'] = pd.to_numeric(df['Size'])
+            df['Volume'] = pd.to_numeric(df['Volume'])
             return df
 
 
@@ -122,13 +121,9 @@ with tab1:
 
                 # Formater les prix et volumes avec plus de décimales pour les cryptos
                 bids_df['Price'] = bids_df['Price'].apply(lambda x: f"{x:.2f}")
-                bids_df['Size'] = bids_df['Size'].apply(lambda x: f"{x:.5f}")
+                bids_df['Volume'] = bids_df['Volume'].apply(lambda x: f"{x:.5f}")
                 asks_df['Price'] = asks_df['Price'].apply(lambda x: f"{x:.2f}")
-                asks_df['Size'] = asks_df['Size'].apply(lambda x: f"{x:.5f}")
-
-                # Renommer les colonnes pour plus de clarté
-                bids_df = bids_df.rename(columns={"Price": "Bid Price", "Size": "Volume"})
-                asks_df = asks_df.rename(columns={"Price": "Ask Price", "Size": "Volume"})
+                asks_df['Volume'] = asks_df['Volume'].apply(lambda x: f"{x:.5f}")
 
                 # TODO voir comment retirer l'index dataframe donc on passe par html ppur le moment
 
@@ -144,8 +139,8 @@ with tab1:
                 #  height=(10 + 1) * 35 + 3
                 # )
 
-                bids_html = bids_df[['Bid Price', 'Volume']].to_html(index=False)
-                asks_html = asks_df[['Ask Price', 'Volume']].to_html(index=False)
+                bids_html = bids_df[['Price', 'Volume']].to_html(index=False)
+                asks_html = asks_df[['Price', 'Volume']].to_html(index=False)
 
                 # Affichage des Bids sans index
                 st.markdown("<h3 style='color: green;'>Bids 🟢</h3>", unsafe_allow_html=True)
@@ -180,7 +175,7 @@ with tab1:
                         close=df['close']
                     )])
                     fig.update_layout(
-                        title=f"{st.session_state.selected_pair} Price Chart ({st.session_state.selected_interval})",
+                        title=f"{st.session_state.selected_pair} ({st.session_state.selected_interval})",
                         yaxis_title='Price',
                         xaxis_title='Time',
                         xaxis_rangeslider_visible=False
@@ -263,7 +258,7 @@ async def update_orderbook():
                 except json.JSONDecodeError as e:
                     print(f"❌ Error decoding JSON: {e}")
                     continue
-                await asyncio.sleep(1)  # Petit délai pour éviter de surcharger
+                await asyncio.sleep(60)  # Petit délai pour éviter de surcharger
     except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError) as e:
         print(f"WebSocket connection closed or cancelled: {e}. Reconnecting in 5 seconds...")
         await asyncio.sleep(5)
