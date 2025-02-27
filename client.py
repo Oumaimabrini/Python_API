@@ -53,6 +53,19 @@ class APIClient:
             print(f"Error fetching kline data: {e}")
             return None
 
+    def get_orderbook(self, exchange: str, symbol: str):
+        """Fetch orderbook data using REST API"""
+        try:
+            response = requests.get(f"{self.base_url}/orderbook/{exchange}/{symbol}")
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"Error fetching orderbook: Status {response.status_code}")
+                return None
+        except Exception as e:
+            print(f"Error fetching orderbook: {e}")
+            return None
+
     def get_data(self):
         """Fetch protected data that requires authentication"""
         if not self.api_key:
