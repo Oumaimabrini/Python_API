@@ -251,7 +251,8 @@ async def websocket_orderbook(websocket: WebSocket, exchange: str):
         while True:
             pair = active_pair.get(exchange)
             ob = order_books.get(exchange, {}).get(pair, {"bids": [], "asks": []})
-            await websocket.send_text(json.dumps(ob))
+            aggregated = get_top_10_levels(ob)
+            await websocket.send_text(json.dumps(aggregated))
             await asyncio.sleep(1)
     except WebSocketDisconnect:
         pass
@@ -453,6 +454,26 @@ async def list_pairs(exchange: str):
     if exchange not in SUPPORTED_EXCHANGES:
         raise HTTPException(status_code=404, detail="Exchange not supported")
     return SUPPORTED_EXCHANGES[exchange]
+
+@app.websocket("/ws/auth/orderbook/{exchange}")
+async def websocket_orderbook_auth(websocket: WebSocket, exchange: str):
+    # Récupération du token depuis les paramètres de la requête
+    token = websocket.query_params.get("token")
+    if not token or token not in API_KEYS:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    exchange = exchange.lower()
+    try:
+        while True:
+            pair = active_pair.get(exchange)
+            ob = order_books.get(exchange, {}).get(pair, {"bids": [], "asks": []})
+            aggregated = get_top_10_levels(ob)
+            await websocket.send_text(json.dumps(aggregated))
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        pass
 
 
 # Simulation d'un endpoint pour récupérer des chandeliers
@@ -671,6 +692,14 @@ async def get_twap_order_status(order_id: str):
         raise HTTPException(status_code=404, detail="Order not found")
 
     return TWAPOrderStatus(**twap_orders[order_id]["status"])
+
+@app.get("/orders", tags=["authenticated"])
+async def list_orders(api_key: Optional[str] = Security(token_id_header)):
+    """
+    Liste tous les ordres TWAP (ouverts ou terminés).
+    Optionnellement, filtre par token (ici, on renvoie tous les ordres car le token n'est pas stocké dans l'ordre).
+    """
+    return [order_data["status"] for order_data in twap_orders.values()]
 
 
 async def execute_twap_order(order_id: str):
