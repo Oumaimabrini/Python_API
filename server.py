@@ -80,9 +80,9 @@ async def kraken_orderbook_updater():
         await websocket.send(json.dumps(subscribe_message))
 
         def normalize_pair(pair: str) -> str:
-                    # Convertit "XBT/USD" en "XBTUSD"
-                    return pair.replace("/", "")
-        
+            # Convertit "XBT/USD" en "XBTUSD"
+            return pair.replace("/", "")
+
         async for message in websocket:
             data = json.loads(message)
 
@@ -91,30 +91,31 @@ async def kraken_orderbook_updater():
                 pair = data[-1]  # Dernier élément = paire ("XBT/USD" ou "ETH/USD")
                 normalized_pair = normalize_pair(pair)
 
-
-
                 # Initialiser l'order book si nécessaire
                 if normalized_pair not in order_books["kraken"]:
                     order_books["kraken"][normalized_pair] = {"bids": [], "asks": []}
 
                 # Mise à jour des bids et asks
-                #TODO j'ai mis bs et as car c'est ce que rend ws, à voir comment régler ça
-                if "b"in payload or "bs" in payload:
+                # TODO j'ai mis bs et as car c'est ce que rend ws, à voir comment régler ça
+                if "b" in payload or "bs" in payload:
                     # order_books["kraken"][pair]["bids"] = payload["b"]
-                    order_books["kraken"][normalized_pair]["bids"] = [s[:2] for s in payload["bs"]] if "bs" in payload else [s[:2]
-                                                                                                                  for s
-                                                                                                                  in
-                                                                                                                  payload[
-                                                                                                                      "b"]]
-                if "a"in payload or "as" in payload:
+                    order_books["kraken"][normalized_pair]["bids"] = [s[:2] for s in
+                                                                      payload["bs"]] if "bs" in payload else [s[:2]
+                                                                                                              for s
+                                                                                                              in
+                                                                                                              payload[
+                                                                                                                  "b"]]
+                if "a" in payload or "as" in payload:
                     # order_books["kraken"][pair]["asks"] = payload["a"]
-                    order_books["kraken"][normalized_pair]["asks"] = [s[:2] for s in payload["as"]] if "as" in payload else [s[:2]
-                                                                                                                  for s
-                                                                                                                  in
-                                                                                                                  payload[
-                                                                                                                      "a"]]
+                    order_books["kraken"][normalized_pair]["asks"] = [s[:2] for s in
+                                                                      payload["as"]] if "as" in payload else [s[:2]
+                                                                                                              for s
+                                                                                                              in
+                                                                                                              payload[
+                                                                                                                  "a"]]
 
-                print(f"🔄 Mise à jour Kraken Order Book {normalized_pair} :", json.dumps(order_books["kraken"][normalized_pair], indent=4))
+                print(f"🔄 Mise à jour Kraken Order Book {normalized_pair} :",
+                      json.dumps(order_books["kraken"][normalized_pair], indent=4))
 
 
 @asynccontextmanager
@@ -455,6 +456,7 @@ async def list_pairs(exchange: str):
         raise HTTPException(status_code=404, detail="Exchange not supported")
     return SUPPORTED_EXCHANGES[exchange]
 
+
 @app.websocket("/ws/auth/orderbook/{exchange}")
 async def websocket_orderbook_auth(websocket: WebSocket, exchange: str):
     # Récupération du token depuis les paramètres de la requête
@@ -692,6 +694,7 @@ async def get_twap_order_status(order_id: str):
         raise HTTPException(status_code=404, detail="Order not found")
 
     return TWAPOrderStatus(**twap_orders[order_id]["status"])
+
 
 @app.get("/orders", tags=["authenticated"])
 async def list_orders(api_key: Optional[str] = Security(token_id_header)):
