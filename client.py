@@ -15,7 +15,19 @@ class APIClient:
     def get_headers(self):
         """Get headers with API key for authenticated requests"""
         return {"X-Token-ID": self.api_key} if self.api_key else {}
-
+    def set_active_pair(self, exchange: str, pair: str):
+        """Définit la paire active pour l'exchange en appelant l'endpoint dédié."""
+        try:
+            url = f"{self.base_url}/set_active_pair/{exchange}/{pair}"
+            response = requests.post(url, headers=self.get_headers())
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"Error setting active pair: {response.status_code}, {response.text}")
+                return None
+        except Exception as e:
+            print(f"Exception in set_active_pair: {e}")
+            return None
     def check_status(self):
         """Check if the API is running"""
         try:
@@ -55,7 +67,7 @@ class APIClient:
     def get_orderbook(self, exchange: str, symbol: str):
         """Fetch orderbook data using REST API"""
         try:
-            response = requests.get(f"{self.base_url}/orderbook/{exchange}/{symbol}")
+            response = requests.get(f"{self.base_url}/orderbook/{exchange}/{symbol.upper()}")
             if response.status_code == 200:
                 return response.json()
             else:
