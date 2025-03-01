@@ -25,16 +25,16 @@ KRAKEN_WS_URL = "wss://ws.kraken.com"
 BASE_REST_SPOT_URL = "https://api.binance.com"
 BASE_REST_KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
 
-# Durée du cache en secondes (par exemple 1 heure)
+# Cache duration in seconds (e.g., 1 hour)
 CACHE_DURATION = 3600
 
-# Variables globales de cache
+# Global cache variables
 cached_trading_pairs = {
     "binance": {"timestamp": 0, "data": []},
     "kraken": {"timestamp": 0, "data": []}
 }
 
-# Définition unique de order_books
+# Unique definition of order_books
 order_books: Dict[str, Dict[str, Dict[str, List]]] = {
     "binance": {},
     "kraken": {}
@@ -43,7 +43,7 @@ order_books: Dict[str, Dict[str, Dict[str, List]]] = {
 
 async def get_binance_trading_pairs():
     now = time.time()
-    # Vérifie le cache
+    # Check the cache
     if now - cached_trading_pairs["binance"]["timestamp"] < CACHE_DURATION:
         return cached_trading_pairs["binance"]["data"]
 
@@ -70,7 +70,7 @@ async def get_kraken_trading_pairs():
             return pairs
 
 
-# Stocke la paire active pour chaque exchange
+# Store the active pair for each exchange
 active_pair = {
     "binance": None,
     "kraken": None
@@ -86,14 +86,14 @@ async def binance_orderbook_updater():
 
             current_pair = active_pair["binance"]
             url = f"wss://stream.binance.com:9443/ws/{current_pair.lower()}@depth10"
-            print(f"➡️ Connexion WebSocket Binance pour {current_pair} : {url}")
+            print(f"➡️ Connecting to Binance WebSocket for {current_pair}: {url}")
 
             async with websockets.connect(url) as websocket:
                 async for message in websocket:
-                    # Vérifier si la paire active a changé :
+                    # Check if the active pair has changed
                     if active_pair["binance"] != current_pair:
                         print(
-                            f"⚠️ Paire modifiée ({current_pair} -> {active_pair['binance']}). On se déconnecte et on se reconnectera.")
+                            f"⚠️ Pair changed ({current_pair} -> {active_pair['binance']}). Disconnecting and reconnecting.")
                         break
 
                     data = json.loads(message)
@@ -103,9 +103,9 @@ async def binance_orderbook_updater():
                             "asks": data["asks"]
                         }
                         # Debug
-                        print(f"✅ Order book mis à jour pour {current_pair}")
+                        print(f"✅ Order book updated for {current_pair}")
         except Exception as e:
-            print("❌ Exception dans binance_orderbook_updater:", e)
+            print("❌ Exception in binance_orderbook_updater:", e)
             await asyncio.sleep(5)
 
 
@@ -120,7 +120,7 @@ async def kraken_orderbook_updater():
             async with websockets.connect("wss://ws.kraken.com") as websocket:
                 subscribe_message = {
                     "event": "subscribe",
-                    "pair": [pair],  # On met la paire active
+                    "pair": [pair],  # Set the active pair
                     "subscription": {"name": "book", "depth": 10}
                 }
                 await websocket.send(json.dumps(subscribe_message))
@@ -129,7 +129,7 @@ async def kraken_orderbook_updater():
                     data = json.loads(message)
                     if isinstance(data, list) and len(data) > 1:
                         payload = data[1]
-                        received_pair = data[-1]  # la dernière valeur est la paire
+                        received_pair = data[-1]  # The last value is the pair
                         if received_pair == pair:
                             if "b" in payload or "bs" in payload:
                                 bids_list = payload.get("bs") or payload.get("b")
@@ -138,7 +138,7 @@ async def kraken_orderbook_updater():
                                 asks_list = payload.get("as") or payload.get("a")
                                 order_books["kraken"][pair]["asks"] = [a[:2] for a in asks_list]
         except Exception as e:
-            print("Exception dans kraken_orderbook_updater:", e)
+            print("Exception in kraken_orderbook_updater:", e)
             await asyncio.sleep(5)
 
 
@@ -147,7 +147,7 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     loop.create_task(binance_orderbook_updater())
     loop.create_task(kraken_orderbook_updater())
-    yield  # Attente du shutdown
+    yield  # Wait for shutdown
 
 
 app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
@@ -155,27 +155,27 @@ app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
 
 @app.get("/orderbook/{exchange}/{pair}")
 async def get_orderbook(exchange: str, pair: str):
-    """Renvoie l'order book stocké pour une paire donnée"""
+    """Returns the stored order book for a given pair"""
     if exchange not in order_books:
-        print(f"❌ Exchange non trouvé: {exchange}")
+        print(f"❌ Exchange not found: {exchange}")
         raise HTTPException(status_code=404, detail="Exchange not found")
 
     if pair not in order_books[exchange]:
-        print(f"⚠️ Paire non trouvée: {pair} dans {exchange}")
-        print("📋 Contenu actuel de order_books :", json.dumps(order_books[exchange], indent=4))
+        print(f"⚠️ Pair not found: {pair} in {exchange}")
+        print("📋 Current content of order_books:", json.dumps(order_books[exchange], indent=4))
         raise HTTPException(status_code=404, detail="Pair not found")
 
-    print(f"📤 Envoi de l'order book {exchange} - {pair}")  # Debug
+    print(f"📤 Sending order book {exchange} - {pair}")  # Debug
     return order_books[exchange][pair]
 
 
-# WebSocket global : renvoie toutes les paires
+# Global WebSocket: sends all pairs
 @app.websocket("/ws/orderbook")
 async def websocket_orderbook_global(websocket: WebSocket):
-    """ WebSocket qui envoie l'order book en continu """
+    """WebSocket that continuously sends the order book"""
     await websocket.accept()
     try:
-        print("🔌 Client WebSocket connecté pour l'orderbook global")
+        print("🔌 WebSocket client connected for global orderbook")
         while True:
             snapshot = {}
 
@@ -189,14 +189,14 @@ async def websocket_orderbook_global(websocket: WebSocket):
                         }
 
             if any(snapshot.values()):
-                print(f"📡 [DEBUG] Envoi WebSocket snapshot : {json.dumps(snapshot, indent=4)}")
+                print(f"📡 [DEBUG] Sending WebSocket snapshot: {json.dumps(snapshot, indent=4)}")
                 await websocket.send_text(json.dumps(snapshot))
 
             await asyncio.sleep(1)
     except WebSocketDisconnect:
-        print("🔌 Client WebSocket déconnecté")
+        print("🔌 WebSocket client disconnected")
     except Exception as e:
-        print(f"❌ Erreur WebSocket: {e}")
+        print(f"❌ WebSocket error: {e}")
 
 
 @app.post("/set_active_pair/{exchange}/{pair}")
@@ -204,27 +204,27 @@ async def set_active_pair(exchange: str, pair: str):
     exchange = exchange.lower()
 
     if exchange not in active_pair:
-        raise HTTPException(status_code=400, detail="Exchange non supporté")
+        raise HTTPException(status_code=400, detail="Unsupported exchange")
 
-    # 1) Récupérer la liste des paires sur l’exchange
+    # 1) Retrieve the list of pairs on the exchange
     if exchange == "binance":
         all_pairs = await get_binance_trading_pairs()
     else:
         all_pairs = await get_kraken_trading_pairs()
 
-    # On normalise
+    # Normalize
     pair_upper = pair.upper()
-    # Vérifier si la paire existe
+    # Check if the pair exists
     if pair_upper not in [p.upper() for p in all_pairs]:
-        raise HTTPException(status_code=404, detail="Cette paire n'existe pas sur cet exchange.")
+        raise HTTPException(status_code=404, detail="This pair does not exist on this exchange.")
 
-    # Mettre à jour la paire active
+    # Update the active pair
     active_pair[exchange] = pair_upper
 
-    # Initialisation du carnet s’il n’existe pas
+    # Initialize the order book if it doesn't exist
     order_books.setdefault(exchange, {})[pair_upper] = {"bids": [], "asks": []}
 
-    return {"message": f"Paire active pour {exchange} mise à jour: {pair_upper}"}
+    return {"message": f"Active pair for {exchange} updated: {pair_upper}"}
 
 
 class APIClient:
@@ -236,7 +236,7 @@ class APIClient:
         return {"X-Token-ID": self.api_key} if self.api_key else {}
 
     def set_active_pair(self, exchange: str, pair: str):
-        """Définit la paire active pour l'exchange donné."""
+        """Sets the active pair for the given exchange."""
         try:
             url = f"{self.base_url}/set_active_pair/{exchange}/{pair}"
             response = requests.post(url, headers=self.get_headers())
@@ -246,7 +246,7 @@ class APIClient:
             return None
 
     async def websocket_orderbook(self, exchange: str):
-        """Connecte au WebSocket pour suivre l'order book de la paire active."""
+        """Connects to the WebSocket to follow the order book of the active pair."""
         uri = f"ws://localhost:8000/ws/orderbook/{exchange}"
         async with websockets.connect(uri) as websocket:
             print(f"Connected to WebSocket order book stream for {exchange}.")
@@ -258,12 +258,12 @@ class APIClient:
                 print("WebSocket connection closed.")
 
 
-# Stockage des WebSockets clients
+# Storage of client WebSockets
 clients = []
 
 
 def get_top_10_levels(order_book):
-    """ Récupère les 10 meilleurs niveaux (bids & asks) """
+    """Retrieves the top 10 levels (bids & asks)"""
     return {
         "bids": order_book["bids"][:10],
         "asks": order_book["asks"][:10]
@@ -272,7 +272,7 @@ def get_top_10_levels(order_book):
 
 @app.websocket("/ws/orderbook/{exchange}")
 async def websocket_orderbook(websocket: WebSocket, exchange: str):
-    """WebSocket qui envoie l'Order Book de la paire active uniquement."""
+    """WebSocket that sends the Order Book of the active pair only."""
     await websocket.accept()
     exchange = exchange.lower()
 
@@ -288,7 +288,7 @@ async def websocket_orderbook(websocket: WebSocket, exchange: str):
 
 
 ### =========================
-### Enums et modèles Pydantic
+### Enums and Pydantic Models
 ### =========================
 
 class ClientType(str, Enum):
@@ -297,13 +297,13 @@ class ClientType(str, Enum):
     PREMIUM = "premium_client"
 
 
-# TWAP side / type d'ordre
+# TWAP side / order type
 class OrderSide(str, Enum):
     BUY = "buy"
     SELL = "sell"
 
 
-# Modèle d'ordre pour le paper-trading
+# Order model for paper-trading
 class TWAPOrderRequest(BaseModel):
     exchange: str
     pair: str
@@ -311,16 +311,16 @@ class TWAPOrderRequest(BaseModel):
     total_quantity: float
     limit_price: float
     duration_seconds: int
-    slices: int  # nombre de 'tranches' dans la durée
+    slices: int  # number of 'slices' in the duration
 
 
-# Réponse de création d'ordre
+# Order creation response
 class TWAPOrderResponse(BaseModel):
     order_id: str
     message: str
 
 
-# Modèle d'information d'ordre
+# Order information model
 class TWAPOrderStatus(BaseModel):
     order_id: str
     exchange: str
@@ -337,7 +337,7 @@ class TWAPOrderStatus(BaseModel):
     updated_at: datetime
 
 
-# Réponse pour data
+# Data response
 class DataResponse(BaseModel):
     client_type: ClientType
     message: str
@@ -356,7 +356,7 @@ class RegisterResponse(BaseModel):
 
 
 ### =========================
-### Gestion du Rate Limiting
+### Rate Limiting Management
 ### =========================
 class TokenBucket:
     def __init__(self, rate: float, bucket_size: int):
@@ -389,18 +389,18 @@ DEFAULT_LIMITS = {
 rate_limiters: Dict[str, TokenBucket] = {}
 
 ### =========================================
-### Données en mémoire pour Order Books
+### In-memory data for Order Books
 ### & Paper Trading
 ### =========================================
 
 
-# Stockage en mémoire des ordres TWAP
+# In-memory storage of TWAP orders
 # {order_id: {"request": TWAPOrderRequest, "status": {...}}}
 twap_orders: Dict[str, Dict] = {}
 
 
 ### =========================================
-### Fonctions d’authentification & rate limiting
+### Authentication & Rate Limiting Functions
 ### =========================================
 async def get_rate_limiter(request: Request, api_key: Optional[str] = Security(token_id_header)):
     identifier = f"apikey_{api_key}" if api_key in API_KEYS else f"ip_{request.client.host}"
@@ -421,7 +421,7 @@ async def get_rate_limiter(request: Request, api_key: Optional[str] = Security(t
 
 @app.post("/register", response_model=RegisterResponse)
 async def register(client_type: ClientType):
-    api_key = str(uuid.uuid4())[:8]  # Clé API courte
+    api_key = str(uuid.uuid4())[:8]  # Short API key
     API_KEYS[api_key] = {
         "client_type": client_type,
         "rate_limit": DEFAULT_LIMITS[client_type]["rate_limit"],
@@ -443,7 +443,7 @@ async def get_data(request: Request, api_key: Optional[str] = Security(token_id_
 
     return {
         "client_type": client_type,
-        "message": "Voici des données limitées",
+        "message": "Here is some limited data",
         "timestamp": datetime.now().isoformat(),
         "remaining_tokens": rate_limiter.tokens,
         "rate_limit": rate_limiter.rate
@@ -457,7 +457,7 @@ async def get_data(request: Request, api_key: Optional[str] = Security(token_id_
 @app.get("/exchanges", tags=["public"])
 async def list_exchanges():
     """
-    Retourne la liste des exchanges supportés.
+    Returns the list of supported exchanges.
     """
     return ["binance", "kraken"]
 
@@ -465,7 +465,7 @@ async def list_exchanges():
 @app.get("/exchanges/{exchange}/pairs", tags=["public"])
 async def list_pairs(exchange: str):
     """
-    Retourne la liste des paires disponibles sur un exchange donné.
+    Returns the list of available pairs on a given exchange.
     """
     if exchange not in ["binance", "kraken"]:
         raise HTTPException(status_code=404, detail="Exchange not supported")
@@ -479,7 +479,7 @@ async def list_pairs(exchange: str):
 
 @app.websocket("/ws/auth/orderbook/{exchange}")
 async def websocket_orderbook_auth(websocket: WebSocket, exchange: str):
-    # Récupération du token depuis les paramètres de la requête
+    # Retrieve the token from the request parameters
     token = websocket.query_params.get("token")
     if not token or token not in API_KEYS:
         await websocket.close(code=1008)
@@ -608,7 +608,7 @@ async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit: in
         raise HTTPException(status_code=404, detail=f"Exchange not supported: {exchange}")
 
     # Check if the symbol is supported for this exchange
-    # Récupérer la liste
+    # Retrieve the list
     if exchange == "binance":
         all_pairs = await get_binance_trading_pairs()
     else:
@@ -660,10 +660,10 @@ async def create_twap_order(
         api_key: Optional[str] = Security(token_id_header)
 ):
     """
-    Soumet un ordre TWAP (Time-Weighted Average Price).
-    Nécessite un token_id (ex-api_key).
+    Submits a TWAP (Time-Weighted Average Price) order.
+    Requires a token_id (ex-api_key).
     """
-    # Vérif du rate limit
+    # Rate limit check
     rate_limiter, client_type = await get_rate_limiter(request, api_key)
     if not rate_limiter.try_consume():
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
@@ -671,7 +671,7 @@ async def create_twap_order(
     exch = twap_request.exchange.lower()
     if exch not in ["binance", "kraken"]:
         raise HTTPException(status_code=400, detail="Exchange not supported")
-    # On récupère la liste des paires sur l’exchange
+    # Retrieve the list of pairs on the exchange
     if exch == "binance":
         pairs = await get_binance_trading_pairs()
     else:
@@ -680,9 +680,9 @@ async def create_twap_order(
     if twap_request.pair.upper() not in [p.upper() for p in pairs]:
         raise HTTPException(status_code=400, detail="Pair not supported on this exchange")
 
-    # Génération d'un ID d'ordre
+    # Generate an order ID
     order_id = str(uuid.uuid4())
-    # Création de la structure interne
+    # Create the internal structure
     now = datetime.utcnow()
     twap_orders[order_id] = {
         "request": twap_request,
@@ -703,7 +703,7 @@ async def create_twap_order(
         }
     }
 
-    # Lancement de la tâche en arrière-plan qui gère l'exécution TWAP
+    # Launch the background task that handles TWAP execution
     background_tasks.add_task(execute_twap_order, order_id)
 
     return TWAPOrderResponse(order_id=order_id, message="TWAP order created")
@@ -712,7 +712,7 @@ async def create_twap_order(
 @app.get("/orders/{order_id}", response_model=TWAPOrderStatus)
 async def get_twap_order_status(order_id: str):
     """
-    Récupérer le statut d'un ordre TWAP existant.
+    Retrieve the status of an existing TWAP order.
     """
     if order_id not in twap_orders:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -723,18 +723,18 @@ async def get_twap_order_status(order_id: str):
 @app.get("/orders", tags=["authenticated"])
 async def list_orders(api_key: Optional[str] = Security(token_id_header)):
     """
-    Liste tous les ordres TWAP (ouverts ou terminés).
-    Optionnellement, filtre par token (ici, on renvoie tous les ordres car le token n'est pas stocké dans l'ordre).
+    List all TWAP orders (open or closed).
+    Optionally, filter by token (here, we return all orders as the token is not stored in the order).
     """
     return [order_data["status"] for order_data in twap_orders.values()]
 
 
 async def execute_twap_order(order_id: str):
     """
-    Gère l'exécution pas-à-pas de l'ordre TWAP sur la durée spécifiée.
-    Divise la quantité en 'slices' et tente d'exécuter à chaque intervalle.
+    Handles the step-by-step execution of the TWAP order over the specified duration.
+    Splits the quantity into 'slices' and attempts to execute at each interval.
     """
-    # On récupère l'objet d'ordre
+    # Retrieve the order object
     order_data = twap_orders[order_id]
     twap_req: TWAPOrderRequest = order_data["request"]
     status = order_data["status"]
@@ -746,10 +746,10 @@ async def execute_twap_order(order_id: str):
         if status["is_completed"]:
             break
 
-        await asyncio.sleep(interval)  # On attend le temps d'un 'slice'
+        await asyncio.sleep(interval)  # Wait for the duration of a 'slice'
 
-        # On regarde le prix actuel dans l'order book
-        # (Simplification: on prend le meilleur ask pour BUY, le meilleur bid pour SELL)
+        # Check the current price in the order book
+        # (Simplification: take the best ask for BUY, the best bid for SELL)
         ob = order_books[twap_req.exchange].get(twap_req.pair, {})
         best_ask = float(ob["asks"][0][0]) if ob["asks"] else None
         best_bid = float(ob["bids"][0][0]) if ob["bids"] else None
@@ -758,11 +758,11 @@ async def execute_twap_order(order_id: str):
         executed_amount = 0.0
 
         if twap_req.side == OrderSide.BUY and best_ask is not None:
-            # On vérifie que le ask <= limit_price
+            # Check that the ask <= limit_price
             if best_ask <= twap_req.limit_price:
                 can_execute = True
         elif twap_req.side == OrderSide.SELL and best_bid is not None:
-            # On vérifie que le bid >= limit_price
+            # Check that the bid >= limit_price
             if best_bid >= twap_req.limit_price:
                 can_execute = True
 
@@ -773,18 +773,18 @@ async def execute_twap_order(order_id: str):
         status["slices_executed"] += 1
         status["updated_at"] = datetime.utcnow()
 
-        # Vérifier si on a tout exécuté
+        # Check if we have executed everything
         if status["executed_quantity"] >= twap_req.total_quantity:
             status["is_completed"] = True
             break
 
-    # Si on n'a pas tout exécuté au terme des slices, on considère l'ordre terminé malgré tout
+    # If we haven't executed everything by the end of the slices, we consider the order completed anyway
     status["is_completed"] = True
     status["updated_at"] = datetime.utcnow()
 
 
 ### =========================================
-### Lanceur
+### Launcher
 ### =========================================
 
 if __name__ == "__main__":

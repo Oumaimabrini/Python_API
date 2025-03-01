@@ -4,23 +4,21 @@ import plotly.graph_objects as go
 import asyncio
 import websockets
 import json
-import time
-from datetime import datetime, timedelta
 import threading
 import queue
 
 from streamlit_autorefresh import st_autorefresh
 from client import APIClient
 
-# Configuration initiale de Streamlit
+# Initial Streamlit configuration
 st.set_page_config(page_title="OrderBook Stream", layout="wide")
 st_autorefresh(interval=2000, key="orderbook_refresh")
 
-# File pour les mises à jour de l'order book
+# Queue for order book updates
 orderbook_queue = queue.Queue()
 
 # ------------------------------------------------------------------------------
-# 1) Initialisation de st.session_state
+# 1) Initialize st.session_state
 # ------------------------------------------------------------------------------
 if 'client' not in st.session_state:
     st.session_state.client = APIClient(base_url="http://localhost:8000")
@@ -37,10 +35,10 @@ if 'ws_thread' not in st.session_state:
 
 
 # ------------------------------------------------------------------------------
-# 2) Fonction asynchrone pour consommer le WebSocket du serveur
+# 2) Asynchronous function to consume the WebSocket from the server
 # ------------------------------------------------------------------------------
 async def update_orderbook():
-    """Récupération des données d'order book via WebSocket global."""
+    """Fetch order book data via global WebSocket."""
     uri = "ws://localhost:8000/ws/orderbook"
     while True:
         try:
@@ -60,7 +58,7 @@ async def update_orderbook():
 
 
 # ------------------------------------------------------------------------------
-# 3) Thread pour lancer l'event loop asynchrone
+# 3) Thread to run the asynchronous event loop
 # ------------------------------------------------------------------------------
 def start_websocket_thread():
     loop = asyncio.new_event_loop()
@@ -69,7 +67,7 @@ def start_websocket_thread():
 
 
 # ------------------------------------------------------------------------------
-# 4) Lancement conditionnel du thread WebSocket
+# 4) Conditional WebSocket thread startup
 # ------------------------------------------------------------------------------
 def ensure_websocket_thread_running():
     if st.session_state.ws_thread is None or not st.session_state.ws_thread.is_alive():
@@ -80,18 +78,18 @@ def ensure_websocket_thread_running():
 ensure_websocket_thread_running()
 
 # ------------------------------------------------------------------------------
-# 5) Layout Streamlit
+# 5) Streamlit Layout
 # ------------------------------------------------------------------------------
 st.title("Cryptocurrency Trading Dashboard")
 
-# Sidebar de configuration
+# Configuration sidebar
 with st.sidebar:
     st.header("Configuration")
     api_key = st.text_input("API Key", type="password")
     if api_key:
         st.session_state.client.api_key = api_key
 
-    # Liste des exchanges
+    # List of exchanges
     exchanges = st.session_state.client.list_exchanges()
     if exchanges:
         selected_exchange = st.selectbox("Select Exchange", exchanges)
@@ -100,7 +98,7 @@ with st.sidebar:
             pairs = st.session_state.client.list_pairs(selected_exchange)
             st.session_state.pairs = pairs or []
 
-        # Liste des paires
+        # List of pairs
         if hasattr(st.session_state, 'pairs'):
             selected_pair = st.selectbox("Select Trading Pair", st.session_state.pairs)
             if selected_pair != st.session_state.selected_pair:
@@ -112,7 +110,7 @@ with st.sidebar:
                     st.session_state.selected_exchange,
                     selected_pair
                 )
-    # Sélection de l'intervalle Kline
+    # Kline interval selection
     if st.session_state.selected_exchange == "binance":
         intervals = ["1m", "5m", "15m", "30m", "1h", "6h", "12h", "1d", "3d", "1w"]
     else:
@@ -120,20 +118,20 @@ with st.sidebar:
     selected_interval = st.selectbox("Select Kline Interval", intervals, index=0)
     st.session_state.selected_interval = selected_interval
 
-# Onglets
+# Tabs
 tab1, tab2, tab3 = st.tabs(["Market Data", "TWAP Trading", "Order History"])
 
 # ------------------------------------------------------------------------------
-# 6) Onglet Market Data
+# 6) Market Data Tab
 # ------------------------------------------------------------------------------
 with tab1:
     col1, col2 = st.columns(2)
 
-    # Partie gauche : Order Book
+    # Left side: Order Book
     with col1:
         st.subheader("Order Book")
 
-        # Fusion des snapshots depuis la file d'attente
+        # Merge snapshots from the queue
         if not orderbook_queue.empty():
             new_data = orderbook_queue.get_nowait()
             for exch, pairs_data in new_data.items():
@@ -142,7 +140,7 @@ with tab1:
                     if ob.get("bids") and ob.get("asks"):
                         st.session_state.orderbook_data[exch][pair_symbol] = ob
 
-        # Fallback REST : uniquement si aucune donnée n'est présente
+        # REST fallback: only if no data is present
         if st.session_state.selected_exchange and st.session_state.selected_pair:
             current = st.session_state.orderbook_data.get(st.session_state.selected_exchange, {}).get(
                 st.session_state.selected_pair, {})
@@ -158,7 +156,7 @@ with tab1:
 
         def format_orderbook(data):
             if not data:
-                st.warning("⚠️ Aucun ordre reçu (bids/asks vides)")
+                st.warning("⚠️ No orders received (empty bids/asks)")
                 return pd.DataFrame()
             try:
                 df = pd.DataFrame(data, columns=['Price', 'Volume'])
@@ -166,7 +164,7 @@ with tab1:
                 df['Volume'] = pd.to_numeric(df['Volume'])
                 return df
             except Exception as e:
-                st.error(f"🚨 Erreur dans format_orderbook: {e}")
+                st.error(f"🚨 Error in format_orderbook: {e}")
                 return pd.DataFrame()
 
 
@@ -176,7 +174,7 @@ with tab1:
         if exchange and pair:
             ob_data = st.session_state.orderbook_data.get(exchange, {}).get(pair, {})
             if not (ob_data.get('bids') and ob_data.get('asks')):
-                st.info("Chargement des données d'order book pour la paire sélectionnée...")
+                st.info("Loading order book data for the selected pair...")
             else:
                 bids_df = format_orderbook(ob_data.get('bids', []))
                 asks_df = format_orderbook(ob_data.get('asks', []))
@@ -193,11 +191,11 @@ with tab1:
                     st.markdown("<h3 style='color: red;'>Asks 🔴</h3>", unsafe_allow_html=True)
                     st.markdown(asks_df.to_html(index=False), unsafe_allow_html=True)
                 else:
-                    st.warning("⚠️ Order book data incomplete.")
+                    st.warning("⚠️ Incomplete order book data.")
         else:
             st.warning("⚠️ Please select an exchange and pair.")
 
-    # Partie droite : Graphique (kline)
+    # Right side: Chart (kline)
     with col2:
         st.subheader("Price Chart")
         if exchange and pair:
@@ -231,7 +229,7 @@ with tab1:
                 st.error(f"Error fetching kline data: {str(e)}")
 
 # ------------------------------------------------------------------------------
-# 7) Onglet TWAP Trading
+# 7) TWAP Trading Tab
 # ------------------------------------------------------------------------------
 with tab2:
     st.subheader("Create TWAP Order")
@@ -266,7 +264,7 @@ with tab2:
                 st.error(f"Error submitting order: {str(e)}")
 
 # ------------------------------------------------------------------------------
-# 8) Onglet Order History
+# 8) Order History Tab
 # ------------------------------------------------------------------------------
 with tab3:
     st.subheader("Order History")
