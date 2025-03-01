@@ -1,12 +1,10 @@
 import asyncio
-import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Optional, List
 from enum import Enum
-import aiohttp
 import uvicorn
-from fastapi import FastAPI, Security, HTTPException, Request, Depends, BackgroundTasks
+from fastapi import FastAPI, Security, Request, BackgroundTasks
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 import requests
@@ -19,7 +17,7 @@ import json
 from contextlib import asynccontextmanager
 import websockets
 
-# BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
+# URL
 BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth10"
 KRAKEN_WS_URL = "wss://ws.kraken.com"
 BASE_REST_SPOT_URL = "https://api.binance.com"
