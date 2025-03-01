@@ -40,6 +40,7 @@ order_books: Dict[str, Dict[str, Dict[str, List]]] = {
     "kraken": {}
 }
 
+
 async def get_binance_trading_pairs():
     now = time.time()
     # Vérifie le cache
@@ -74,6 +75,8 @@ active_pair = {
     "binance": None,
     "kraken": None
 }
+
+
 async def binance_orderbook_updater():
     while True:
         try:
@@ -89,7 +92,8 @@ async def binance_orderbook_updater():
                 async for message in websocket:
                     # Vérifier si la paire active a changé :
                     if active_pair["binance"] != current_pair:
-                        print(f"⚠️ Paire modifiée ({current_pair} -> {active_pair['binance']}). On se déconnecte et on se reconnectera.")
+                        print(
+                            f"⚠️ Paire modifiée ({current_pair} -> {active_pair['binance']}). On se déconnecte et on se reconnectera.")
                         break
 
                     data = json.loads(message)
@@ -103,7 +107,7 @@ async def binance_orderbook_updater():
         except Exception as e:
             print("❌ Exception dans binance_orderbook_updater:", e)
             await asyncio.sleep(5)
-           
+
 
 async def kraken_orderbook_updater():
     while True:
@@ -136,6 +140,7 @@ async def kraken_orderbook_updater():
         except Exception as e:
             print("Exception dans kraken_orderbook_updater:", e)
             await asyncio.sleep(5)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -192,7 +197,6 @@ async def websocket_orderbook_global(websocket: WebSocket):
         print("🔌 Client WebSocket déconnecté")
     except Exception as e:
         print(f"❌ Erreur WebSocket: {e}")
-
 
 
 @app.post("/set_active_pair/{exchange}/{pair}")
@@ -390,7 +394,6 @@ rate_limiters: Dict[str, TokenBucket] = {}
 ### =========================================
 
 
-
 # Stockage en mémoire des ordres TWAP
 # {order_id: {"request": TWAPOrderRequest, "status": {...}}}
 twap_orders: Dict[str, Dict] = {}
@@ -495,17 +498,12 @@ async def websocket_orderbook_auth(websocket: WebSocket, exchange: str):
         pass
 
 
-# Simulation d'un endpoint pour récupérer des chandeliers
-# Ici, on n'a pas implémenté la logique de vrai stockage historique,
-# donc on retourne des données fictives pour illustrer
-# @app.get("/candlesticks", tags=["public"])
 async def get_kraken_klines(session: aiohttp.ClientSession, symbol: str, interval: str = "1m", limit: int = 5,
                             start_time: Optional[datetime] = None):
     """
     Fetch historical kline data from Kraken and format it to match the Binance format.
     """
     kraken_symbol = symbol.upper()
-
 
     # Convert Binance interval format to Kraken interval format
     interval_mapping = {

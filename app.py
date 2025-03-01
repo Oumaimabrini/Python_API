@@ -35,6 +35,7 @@ if 'selected_pair' not in st.session_state:
 if 'ws_thread' not in st.session_state:
     st.session_state.ws_thread = None
 
+
 # ------------------------------------------------------------------------------
 # 2) Fonction asynchrone pour consommer le WebSocket du serveur
 # ------------------------------------------------------------------------------
@@ -57,6 +58,7 @@ async def update_orderbook():
         except Exception:
             await asyncio.sleep(5)
 
+
 # ------------------------------------------------------------------------------
 # 3) Thread pour lancer l'event loop asynchrone
 # ------------------------------------------------------------------------------
@@ -65,6 +67,7 @@ def start_websocket_thread():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(update_orderbook())
 
+
 # ------------------------------------------------------------------------------
 # 4) Lancement conditionnel du thread WebSocket
 # ------------------------------------------------------------------------------
@@ -72,6 +75,7 @@ def ensure_websocket_thread_running():
     if st.session_state.ws_thread is None or not st.session_state.ws_thread.is_alive():
         st.session_state.ws_thread = threading.Thread(target=start_websocket_thread, daemon=True)
         st.session_state.ws_thread.start()
+
 
 ensure_websocket_thread_running()
 
@@ -102,7 +106,8 @@ with st.sidebar:
             if selected_pair != st.session_state.selected_pair:
                 st.session_state.selected_pair = selected_pair
                 if st.session_state.selected_exchange:
-                    st.session_state.orderbook_data.setdefault(st.session_state.selected_exchange, {})[selected_pair] = {}
+                    st.session_state.orderbook_data.setdefault(st.session_state.selected_exchange, {})[
+                        selected_pair] = {}
                 st.session_state.client.set_active_pair(
                     st.session_state.selected_exchange,
                     selected_pair
@@ -139,14 +144,17 @@ with tab1:
 
         # Fallback REST : uniquement si aucune donnée n'est présente
         if st.session_state.selected_exchange and st.session_state.selected_pair:
-            current = st.session_state.orderbook_data.get(st.session_state.selected_exchange, {}).get(st.session_state.selected_pair, {})
+            current = st.session_state.orderbook_data.get(st.session_state.selected_exchange, {}).get(
+                st.session_state.selected_pair, {})
             if not (current.get('bids') and current.get('asks')):
                 ob_data = st.session_state.client.get_orderbook(
                     st.session_state.selected_exchange,
                     st.session_state.selected_pair
                 )
                 if ob_data and ob_data.get('bids') and ob_data.get('asks'):
-                    st.session_state.orderbook_data.setdefault(st.session_state.selected_exchange, {})[st.session_state.selected_pair] = ob_data
+                    st.session_state.orderbook_data.setdefault(st.session_state.selected_exchange, {})[
+                        st.session_state.selected_pair] = ob_data
+
 
         def format_orderbook(data):
             if not data:
@@ -160,6 +168,7 @@ with tab1:
             except Exception as e:
                 st.error(f"🚨 Erreur dans format_orderbook: {e}")
                 return pd.DataFrame()
+
 
         exchange = st.session_state.selected_exchange
         pair = st.session_state.selected_pair
@@ -261,15 +270,45 @@ with tab2:
 # ------------------------------------------------------------------------------
 with tab3:
     st.subheader("Order History")
+
     if st.session_state.orders:
-        orders_df = pd.DataFrame(st.session_state.orders)
-        for i, order in orders_df.iterrows():
-            status = st.session_state.client.get_twap_order_status(order['order_id'])
-            if status:
-                progress = status['executed_quantity'] / status['total_quantity'] * 100
-                st.progress(progress)
-                st.write(f"Order {order['order_id']}: {progress:.1f}% executed")
-                status_df = pd.DataFrame([status])
-                st.dataframe(status_df)
+        for order in st.session_state.orders:
+            try:
+                order_id = order.get('order_id')
+                if not order_id:
+                    st.warning("Order missing ID")
+                    continue
+
+                status = st.session_state.client.get_twap_order_status(order_id)
+
+                if status:
+                    # Create an expander for each order for better organization
+                    with st.expander(f"Order {order_id} - {status.get('pair', 'Unknown Pair')}"):
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            st.write("**Order Details:**")
+                            st.write(f"Exchange: {status.get('exchange', 'N/A')}")
+                            st.write(f"Pair: {status.get('pair', 'N/A')}")
+                            st.write(f"Side: {status.get('side', 'N/A')}")
+                            st.write(f"Limit Price: {status.get('limit_price', 'N/A')}")
+
+                        with col2:
+                            st.write("**Execution Details:**")
+                            st.write(f"Slices: {status.get('slices_executed', 0)}/{status.get('slices', 0)}")
+                            st.write(f"Created: {status.get('created_at', 'N/A')}")
+                            st.write(f"Updated: {status.get('updated_at', 'N/A')}")
+                            st.write(f"Completed: {'Yes' if status.get('is_completed', False) else 'No'}")
+
+                        # Calculate and show progress
+                        if 'executed_quantity' in status and 'total_quantity' in status and status[
+                            'total_quantity'] > 0:
+                            progress = status['slices_executed'] / status['slices']
+                            st.progress(progress)
+
+                else:
+                    st.warning(f"Could not retrieve status for order {order_id}")
+            except Exception as e:
+                st.error(f"Error processing order: {str(e)}")
     else:
-        st.info("No orders found")
+        st.info("No orders found. Create a TWAP order in the Trading tab to get started.")
