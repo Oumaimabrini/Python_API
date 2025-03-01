@@ -10,6 +10,8 @@ from fastapi import FastAPI, Security, HTTPException, Request, Depends, Backgrou
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 import requests
+import aiohttp
+import time
 
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 import json
@@ -23,13 +25,13 @@ KRAKEN_WS_URL = "wss://ws.kraken.com"
 BASE_REST_SPOT_URL = "https://api.binance.com"
 BASE_REST_KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
 
-BINANCE_PAIRS = ["BTCUSDT", "ETHUSDT"]
-KRAKEN_PAIRS = ["XBTUSD", "ETHUSD"]
-KRAKEN_WS_PAIRS = ["XBT/USD", "ETH/USD"]
+# Durée du cache en secondes (par exemple 1 heure)
+CACHE_DURATION = 3600
 
-KRAKEN_MAPPING = {
-    'XBTUSD': 'XXBTZUSD',
-    'ETHUSD': 'XETHZUSD'
+# Variables globales de cache
+cached_trading_pairs = {
+    "binance": {"timestamp": 0, "data": []},
+    "kraken": {"timestamp": 0, "data": []}
 }
 
 # Définition unique de order_books
@@ -38,89 +40,107 @@ order_books: Dict[str, Dict[str, Dict[str, List]]] = {
     "kraken": {}
 }
 
-# Initialiser les paires
-for exchange in ["binance", "kraken"]:
-    for pair in (BINANCE_PAIRS if exchange == "binance" else KRAKEN_PAIRS):
-        order_books[exchange][pair] = {"bids": [], "asks": []}
+async def get_binance_trading_pairs():
+    now = time.time()
+    # Vérifie le cache
+    if now - cached_trading_pairs["binance"]["timestamp"] < CACHE_DURATION:
+        return cached_trading_pairs["binance"]["data"]
+
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            data = await response.json()
+            pairs = [symbol["symbol"] for symbol in data["symbols"]]
+            cached_trading_pairs["binance"] = {"timestamp": now, "data": pairs}
+            return pairs
+
+
+async def get_kraken_trading_pairs():
+    now = time.time()
+    if now - cached_trading_pairs["kraken"]["timestamp"] < CACHE_DURATION:
+        return cached_trading_pairs["kraken"]["data"]
+
+    url = "https://api.kraken.com/0/public/AssetPairs"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            data = await response.json()
+            pairs = list(data["result"].keys())
+            cached_trading_pairs["kraken"] = {"timestamp": now, "data": pairs}
+            return pairs
+
+
 # Stocke la paire active pour chaque exchange
 active_pair = {
     "binance": None,
     "kraken": None
 }
+async def binance_orderbook_updater():
+    while True:
+        try:
+            if not active_pair["binance"]:
+                await asyncio.sleep(2)
+                continue
 
+            current_pair = active_pair["binance"]
+            url = f"wss://stream.binance.com:9443/ws/{current_pair.lower()}@depth10"
+            print(f"➡️ Connexion WebSocket Binance pour {current_pair} : {url}")
 
-async def binance_orderbook_updater(pair):
-    url = f"wss://stream.binance.com:9443/ws/{pair.lower()}@depth10"
-    async with websockets.connect(url) as websocket:
-        async for message in websocket:
-            data = json.loads(message)
-            if "bids" in data and "asks" in data:
-                order_books["binance"][pair] = {
-                    "bids": data["bids"],
-                    "asks": data["asks"]
-                }
+            async with websockets.connect(url) as websocket:
+                async for message in websocket:
+                    # Vérifier si la paire active a changé :
+                    if active_pair["binance"] != current_pair:
+                        print(f"⚠️ Paire modifiée ({current_pair} -> {active_pair['binance']}). On se déconnecte et on se reconnectera.")
+                        break
 
-                # Ajoute ce print pour voir si l'orderbook est mis à jour :
-                print(f"🔄 DEBUG ORDERBOOK Binance {pair} :", json.dumps(order_books["binance"][pair], indent=4))
-
-
-async def start_binance_orderbooks():
-    # Créer une tâche pour chaque paire de Binance
-    tasks = [binance_orderbook_updater(pair) for pair in BINANCE_PAIRS]
-    await asyncio.gather(*tasks)
+                    data = json.loads(message)
+                    if "bids" in data and "asks" in data:
+                        order_books["binance"][current_pair] = {
+                            "bids": data["bids"],
+                            "asks": data["asks"]
+                        }
+                        # Debug
+                        print(f"✅ Order book mis à jour pour {current_pair}")
+        except Exception as e:
+            print("❌ Exception dans binance_orderbook_updater:", e)
+            await asyncio.sleep(5)
 
 
 async def kraken_orderbook_updater():
-    async with websockets.connect(KRAKEN_WS_URL) as websocket:
-        subscribe_message = {
-            "event": "subscribe",
-            "pair": KRAKEN_WS_PAIRS,
-            "subscription": {"name": "book", "depth": 10}
-        }
-        await websocket.send(json.dumps(subscribe_message))
+    while True:
+        try:
+            if not active_pair["kraken"]:
+                await asyncio.sleep(2)
+                continue
 
-        def normalize_pair(pair: str) -> str:
-                    # Convertit "XBT/USD" en "XBTUSD"
-                    return pair.replace("/", "")
-        
-        async for message in websocket:
-            data = json.loads(message)
+            pair = active_pair["kraken"]
+            async with websockets.connect("wss://ws.kraken.com") as websocket:
+                subscribe_message = {
+                    "event": "subscribe",
+                    "pair": [pair],  # On met la paire active
+                    "subscription": {"name": "book", "depth": 10}
+                }
+                await websocket.send(json.dumps(subscribe_message))
 
-            if isinstance(data, list) and len(data) > 1:
-                payload = data[1]  # Payload contenant les ordres
-                pair = data[-1]  # Dernier élément = paire ("XBT/USD" ou "ETH/USD")
-                normalized_pair = normalize_pair(pair)
-
-
-
-                # Initialiser l'order book si nécessaire
-                if normalized_pair not in order_books["kraken"]:
-                    order_books["kraken"][normalized_pair] = {"bids": [], "asks": []}
-
-                # Mise à jour des bids et asks
-                #TODO j'ai mis bs et as car c'est ce que rend ws, à voir comment régler ça
-                if "b"in payload or "bs" in payload:
-                    # order_books["kraken"][pair]["bids"] = payload["b"]
-                    order_books["kraken"][normalized_pair]["bids"] = [s[:2] for s in payload["bs"]] if "bs" in payload else [s[:2]
-                                                                                                                  for s
-                                                                                                                  in
-                                                                                                                  payload[
-                                                                                                                      "b"]]
-                if "a"in payload or "as" in payload:
-                    # order_books["kraken"][pair]["asks"] = payload["a"]
-                    order_books["kraken"][normalized_pair]["asks"] = [s[:2] for s in payload["as"]] if "as" in payload else [s[:2]
-                                                                                                                  for s
-                                                                                                                  in
-                                                                                                                  payload[
-                                                                                                                      "a"]]
-
-                print(f"🔄 Mise à jour Kraken Order Book {normalized_pair} :", json.dumps(order_books["kraken"][normalized_pair], indent=4))
-
+                async for message in websocket:
+                    data = json.loads(message)
+                    if isinstance(data, list) and len(data) > 1:
+                        payload = data[1]
+                        received_pair = data[-1]  # la dernière valeur est la paire
+                        if received_pair == pair:
+                            if "b" in payload or "bs" in payload:
+                                bids_list = payload.get("bs") or payload.get("b")
+                                order_books["kraken"][pair]["bids"] = [b[:2] for b in bids_list]
+                            if "a" in payload or "as" in payload:
+                                asks_list = payload.get("as") or payload.get("a")
+                                order_books["kraken"][pair]["asks"] = [a[:2] for a in asks_list]
+        except Exception as e:
+            print("Exception dans kraken_orderbook_updater:", e)
+            await asyncio.sleep(5)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
-    loop.create_task(start_binance_orderbooks())
+    loop.create_task(binance_orderbook_updater())
     loop.create_task(kraken_orderbook_updater())
     yield  # Attente du shutdown
 
@@ -130,38 +150,43 @@ app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
 
 @app.get("/orderbook/{exchange}/{pair}")
 async def get_orderbook(exchange: str, pair: str):
-    # On lit la variable globale unique order_books
+    """Renvoie l'order book stocké pour une paire donnée"""
     if exchange not in order_books:
+        print(f"❌ Exchange non trouvé: {exchange}")
         raise HTTPException(status_code=404, detail="Exchange not found")
+
     if pair not in order_books[exchange]:
+        print(f"⚠️ Paire non trouvée: {pair} dans {exchange}")
+        print("📋 Contenu actuel de order_books :", json.dumps(order_books[exchange], indent=4))
         raise HTTPException(status_code=404, detail="Pair not found")
+
+    print(f"📤 Envoi de l'order book {exchange} - {pair}")  # Debug
     return order_books[exchange][pair]
 
 
 # WebSocket global : renvoie toutes les paires
 @app.websocket("/ws/orderbook")
 async def websocket_orderbook_global(websocket: WebSocket):
+    """ WebSocket qui envoie l'order book en continu """
     await websocket.accept()
     try:
         print("🔌 Client WebSocket connecté pour l'orderbook global")
         while True:
-            # Créer une copie du snapshot actuel de l'orderbook
             snapshot = {}
+
             for exch, pairs_data in order_books.items():
                 snapshot[exch] = {}
                 for p, ob in pairs_data.items():
-                    if ob["bids"] and ob["asks"]:
+                    if "bids" in ob and "asks" in ob and ob["bids"] and ob["asks"]:
                         snapshot[exch][p] = {
                             "bids": ob["bids"],
                             "asks": ob["asks"]
                         }
 
-            # Envoyer le snapshot si au moins un exchange a des données
             if any(snapshot.values()):
-                print(f"📡 Envoi snapshot order_books: {len(snapshot)} exchanges")
+                print(f"📡 [DEBUG] Envoi WebSocket snapshot : {json.dumps(snapshot, indent=4)}")
                 await websocket.send_text(json.dumps(snapshot))
 
-            # Attendre avant la prochaine mise à jour
             await asyncio.sleep(1)
     except WebSocketDisconnect:
         print("🔌 Client WebSocket déconnecté")
@@ -169,33 +194,33 @@ async def websocket_orderbook_global(websocket: WebSocket):
         print(f"❌ Erreur WebSocket: {e}")
 
 
-# Assure-toi que les paires existent AVANT de démarrer WebSocket
-for exchange in ["binance", "kraken"]:
-    for pair in (BINANCE_PAIRS if exchange == "binance" else KRAKEN_PAIRS):
-        if pair not in order_books[exchange]:
-            order_books[exchange][pair] = {"bids": [], "asks": []}
-
-orderbook_data = {
-    "binance": {
-        "BTCUSDT": {"bids": [], "asks": []},
-        "ETHUSDT": {"bids": [], "asks": []},
-    }
-}
-
 
 @app.post("/set_active_pair/{exchange}/{pair}")
 async def set_active_pair(exchange: str, pair: str):
-    """Définit la paire active pour l'exchange spécifié."""
     exchange = exchange.lower()
-    pair = pair.upper()
 
     if exchange not in active_pair:
         raise HTTPException(status_code=400, detail="Exchange non supporté")
 
-    active_pair[exchange] = pair
-    order_books.setdefault(exchange, {})[pair] = {"bids": [], "asks": []}
+    # 1) Récupérer la liste des paires sur l’exchange
+    if exchange == "binance":
+        all_pairs = await get_binance_trading_pairs()
+    else:
+        all_pairs = await get_kraken_trading_pairs()
 
-    return {"message": f"Paire active pour {exchange} mise à jour à {pair}"}
+    # On normalise
+    pair_upper = pair.upper()
+    # Vérifier si la paire existe
+    if pair_upper not in [p.upper() for p in all_pairs]:
+        raise HTTPException(status_code=404, detail="Cette paire n'existe pas sur cet exchange.")
+
+    # Mettre à jour la paire active
+    active_pair[exchange] = pair_upper
+
+    # Initialisation du carnet s’il n’existe pas
+    order_books.setdefault(exchange, {})[pair_upper] = {"bids": [], "asks": []}
+
+    return {"message": f"Paire active pour {exchange} mise à jour: {pair_upper}"}
 
 
 class APIClient:
@@ -364,19 +389,7 @@ rate_limiters: Dict[str, TokenBucket] = {}
 ### & Paper Trading
 ### =========================================
 
-# Liste "hardcodée" des échanges et paires supportées
-# (à ajuster selon nos besoins)
-SUPPORTED_EXCHANGES = {
-    "binance": BINANCE_PAIRS,
-    "kraken": KRAKEN_PAIRS
-}
 
-for ex in SUPPORTED_EXCHANGES:
-    for pair in SUPPORTED_EXCHANGES[ex]:
-        order_books[ex][pair] = {
-            "bids": [],
-            "asks": []
-        }
 
 # Stockage en mémoire des ordres TWAP
 # {order_id: {"request": TWAPOrderRequest, "status": {...}}}
@@ -443,7 +456,7 @@ async def list_exchanges():
     """
     Retourne la liste des exchanges supportés.
     """
-    return list(SUPPORTED_EXCHANGES.keys())
+    return ["binance", "kraken"]
 
 
 @app.get("/exchanges/{exchange}/pairs", tags=["public"])
@@ -451,9 +464,14 @@ async def list_pairs(exchange: str):
     """
     Retourne la liste des paires disponibles sur un exchange donné.
     """
-    if exchange not in SUPPORTED_EXCHANGES:
+    if exchange not in ["binance", "kraken"]:
         raise HTTPException(status_code=404, detail="Exchange not supported")
-    return SUPPORTED_EXCHANGES[exchange]
+    if exchange == "binance":
+        pairs = await get_binance_trading_pairs()
+    else:
+        pairs = await get_kraken_trading_pairs()
+
+    return pairs
 
 @app.websocket("/ws/auth/orderbook/{exchange}")
 async def websocket_orderbook_auth(websocket: WebSocket, exchange: str):
@@ -487,8 +505,6 @@ async def get_kraken_klines(session: aiohttp.ClientSession, symbol: str, interva
     """
     kraken_symbol = symbol.upper()
 
-    if kraken_symbol not in KRAKEN_MAPPING:
-        raise HTTPException(status_code=400, detail=f"Unsupported symbol for Kraken: {kraken_symbol}")
 
     # Convert Binance interval format to Kraken interval format
     interval_mapping = {
@@ -504,7 +520,7 @@ async def get_kraken_klines(session: aiohttp.ClientSession, symbol: str, interva
     kraken_interval = interval_mapping.get(interval, "60")  # Default to 1h if interval not found
 
     params = {
-        'pair': KRAKEN_MAPPING[kraken_symbol],
+        'pair': kraken_symbol,
         'interval': kraken_interval,
         'count': limit
     }
@@ -517,7 +533,7 @@ async def get_kraken_klines(session: aiohttp.ClientSession, symbol: str, interva
             if response.status == 200:
                 data = await response.json()
 
-                if "result" in data and KRAKEN_MAPPING[kraken_symbol] in data["result"]:
+                if "result" in data and kraken_symbol in data["result"]:
                     candles = [
                         [
                             int(k[0]),  # timestamp
@@ -526,7 +542,7 @@ async def get_kraken_klines(session: aiohttp.ClientSession, symbol: str, interva
                             float(k[3]),  # low
                             float(k[4]),  # close
                             float(k[6])  # volume (Kraken uses k[6] instead of k[5])
-                        ] for k in data["result"][KRAKEN_MAPPING[kraken_symbol]]
+                        ] for k in data["result"][kraken_symbol]
                     ]
 
                     return candles[:limit]  # Return just the list of candles
@@ -589,13 +605,18 @@ async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit: in
     """
     Fetch real candlestick (kline) data from Binance or Kraken.
     """
-    if exchange.lower() not in SUPPORTED_EXCHANGES:
+    if exchange not in ["binance", "kraken"]:
         raise HTTPException(status_code=404, detail=f"Exchange not supported: {exchange}")
 
     # Check if the symbol is supported for this exchange
-    if symbol.upper() not in SUPPORTED_EXCHANGES[exchange.lower()]:
-        raise HTTPException(status_code=404, detail=f"Symbol {symbol} not supported on {exchange}")
+    # Récupérer la liste
+    if exchange == "binance":
+        all_pairs = await get_binance_trading_pairs()
+    else:
+        all_pairs = await get_kraken_trading_pairs()
 
+    if symbol.upper() not in [p.upper() for p in all_pairs]:
+        raise HTTPException(status_code=404, detail=f"Symbol {symbol} not supported on {exchange}")
     try:
         async with aiohttp.ClientSession() as session:
             if exchange.lower() == "binance":
@@ -648,10 +669,16 @@ async def create_twap_order(
     if not rate_limiter.try_consume():
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
-    # Vérif de l'exchange et pair
-    if twap_request.exchange not in SUPPORTED_EXCHANGES:
+    exch = twap_request.exchange.lower()
+    if exch not in ["binance", "kraken"]:
         raise HTTPException(status_code=400, detail="Exchange not supported")
-    if twap_request.pair not in SUPPORTED_EXCHANGES[twap_request.exchange]:
+    # On récupère la liste des paires sur l’exchange
+    if exch == "binance":
+        pairs = await get_binance_trading_pairs()
+    else:
+        pairs = await get_kraken_trading_pairs()
+
+    if twap_request.pair.upper() not in [p.upper() for p in pairs]:
         raise HTTPException(status_code=400, detail="Pair not supported on this exchange")
 
     # Génération d'un ID d'ordre

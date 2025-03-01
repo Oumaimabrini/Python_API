@@ -1,292 +1,791 @@
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
 import asyncio
-import websockets
-import json
 import time
+import uuid
 from datetime import datetime, timedelta
-import threading
-import queue
+from typing import Dict, Optional, List
+from enum import Enum
+import aiohttp
+import uvicorn
+from fastapi import FastAPI, Security, HTTPException, Request, Depends, BackgroundTasks
+from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel
+import requests
+import aiohttp
+import time
 
-from streamlit_autorefresh import st_autorefresh
-from client import APIClient
+from fastapi import WebSocket, WebSocketDisconnect, HTTPException
+import json
 
-# Configuration de la page
-st.set_page_config(page_title="OrderBook Stream", layout="wide")
-st_autorefresh(interval=60000, key="orderbook_refresh")  # Rafraîchit toutes les 60 secondes
+from contextlib import asynccontextmanager
+import websockets
 
-# File pour les mises à jour de l'order book
-orderbook_queue = queue.Queue()
+# BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth5"
+BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@depth10"
+KRAKEN_WS_URL = "wss://ws.kraken.com"
+BASE_REST_SPOT_URL = "https://api.binance.com"
+BASE_REST_KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
 
-# Initialisation de la session
-if 'client' not in st.session_state:
-    st.session_state.client = APIClient(base_url="http://localhost:8000")
-if 'orderbook_data' not in st.session_state:
-    st.session_state.orderbook_data = {}
-if 'orders' not in st.session_state:
-    st.session_state.orders = []
-if 'selected_exchange' not in st.session_state:
-    st.session_state.selected_exchange = None
-if 'selected_pair' not in st.session_state:
-    st.session_state.selected_pair = None
+# Durée du cache en secondes (par exemple 1 heure)
+CACHE_DURATION = 3600
 
-st.title("Cryptocurrency Trading Dashboard")
+# Variables globales de cache
+cached_trading_pairs = {
+    "binance": {"timestamp": 0, "data": []},
+    "kraken": {"timestamp": 0, "data": []}
+}
 
-# Configuration dans la sidebar
-with st.sidebar:
-    st.header("Configuration")
-    api_key = st.text_input("API Key", type="password")
-    if api_key:
-        st.session_state.client.api_key = api_key
+# Définition unique de order_books
+order_books: Dict[str, Dict[str, Dict[str, List]]] = {
+    "binance": {},
+    "kraken": {}
+}
 
-    # Sélection d'exchange et de paire
-    exchanges = st.session_state.client.list_exchanges()
-    if exchanges:
-        selected_exchange = st.selectbox("Select Exchange", exchanges)
-        if selected_exchange != st.session_state.selected_exchange:
-            st.session_state.selected_exchange = selected_exchange
-            pairs = st.session_state.client.list_pairs(selected_exchange)
-            st.session_state.pairs = pairs
+async def get_binance_trading_pairs():
+    now = time.time()
+    # Vérifie le cache
+    if now - cached_trading_pairs["binance"]["timestamp"] < CACHE_DURATION:
+        return cached_trading_pairs["binance"]["data"]
 
-        if hasattr(st.session_state, 'pairs'):
-            selected_pair = st.selectbox("Select Trading Pair", st.session_state.pairs)
-            if selected_pair != st.session_state.selected_pair:
-                st.session_state.selected_pair = selected_pair
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            data = await response.json()
+            pairs = [symbol["symbol"] for symbol in data["symbols"]]
+            cached_trading_pairs["binance"] = {"timestamp": now, "data": pairs}
+            return pairs
 
-    # Sélection de l'intervalle pour les kline
-    intervals = ["1m", "5m", "15m", "30m", "1h", "6h", "12h", "1d", "3d",
-                 "1w"] if selected_exchange == "binance" else ["1m", "5m",
-                                                               "15m", "30m",
-                                                               "1h", "1d",
-                                                               "1w"]
-    selected_interval = st.selectbox("Select Kline Interval", intervals, index=0)
-    st.session_state.selected_interval = selected_interval
 
-# Définition des onglets de l'interface
-tab1, tab2, tab3 = st.tabs(["Market Data", "TWAP Trading", "Order History"])
+async def get_kraken_trading_pairs():
+    now = time.time()
+    if now - cached_trading_pairs["kraken"]["timestamp"] < CACHE_DURATION:
+        return cached_trading_pairs["kraken"]["data"]
 
-# Onglet Market Data
-with tab1:
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Order Book")
+    url = "https://api.kraken.com/0/public/AssetPairs"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            data = await response.json()
+            pairs = list(data["result"].keys())
+            cached_trading_pairs["kraken"] = {"timestamp": now, "data": pairs}
+            return pairs
 
-        # Tentative de mise à jour de l'order book depuis la file
+
+# Stocke la paire active pour chaque exchange
+active_pair = {
+    "binance": None,
+    "kraken": None
+}
+async def binance_orderbook_updater():
+    while True:
         try:
-            if not orderbook_queue.empty():
-                new_data = orderbook_queue.get_nowait()
-                st.session_state.orderbook_data = new_data
-                st.info(f"🔍 Données reçues: {len(new_data)} exchanges")
-            else:
-                # Fallback sur la méthode REST si le WebSocket ne renvoie rien
-                if st.session_state.selected_exchange and st.session_state.selected_pair:
-                    ob_data = st.session_state.client.get_orderbook(st.session_state.selected_exchange,
-                                                                    st.session_state.selected_pair)
-                    if ob_data:
-                        if st.session_state.selected_exchange not in st.session_state.orderbook_data:
-                            st.session_state.orderbook_data[st.session_state.selected_exchange] = {}
-                        st.session_state.orderbook_data[st.session_state.selected_exchange][
-                            st.session_state.selected_pair] = ob_data
-                    else:
-                        st.warning("🚨 Impossible de récupérer l'order book")
-                else:
-                    st.warning("🚨 Veuillez sélectionner un exchange et une paire")
+            if not active_pair["binance"]:
+                await asyncio.sleep(2)
+                continue
+
+            current_pair = active_pair["binance"]
+            url = f"wss://stream.binance.com:9443/ws/{current_pair.lower()}@depth10"
+            print(f"➡️ Connexion WebSocket Binance pour {current_pair} : {url}")
+
+            async with websockets.connect(url) as websocket:
+                async for message in websocket:
+                    # Vérifier si la paire active a changé :
+                    if active_pair["binance"] != current_pair:
+                        print(f"⚠️ Paire modifiée ({current_pair} -> {active_pair['binance']}). On se déconnecte et on se reconnectera.")
+                        break
+
+                    data = json.loads(message)
+                    if "bids" in data and "asks" in data:
+                        order_books["binance"][current_pair] = {
+                            "bids": data["bids"],
+                            "asks": data["asks"]
+                        }
+                        # Debug
+                        print(f"✅ Order book mis à jour pour {current_pair}")
         except Exception as e:
-            st.error(f"Erreur lors de la mise à jour de l'order book: {str(e)}")
+            print("❌ Exception dans binance_orderbook_updater:", e)
+            await asyncio.sleep(5)
 
 
-        # Fonction de formatage de l'order book
-        def format_orderbook(data):
-            if not data:
-                return pd.DataFrame()
-            df = pd.DataFrame(data, columns=['Price', 'Volume'])
-            df['Price'] = pd.to_numeric(df['Price'])
-            df['Volume'] = pd.to_numeric(df['Volume'])
-            return df
+async def kraken_orderbook_updater():
+    while True:
+        try:
+            if not active_pair["kraken"]:
+                await asyncio.sleep(2)
+                continue
+
+            pair = active_pair["kraken"]
+            async with websockets.connect("wss://ws.kraken.com") as websocket:
+                subscribe_message = {
+                    "event": "subscribe",
+                    "pair": [pair],  # On met la paire active
+                    "subscription": {"name": "book", "depth": 10}
+                }
+                await websocket.send(json.dumps(subscribe_message))
+
+                async for message in websocket:
+                    data = json.loads(message)
+                    if isinstance(data, list) and len(data) > 1:
+                        payload = data[1]
+                        received_pair = data[-1]  # la dernière valeur est la paire
+                        if received_pair == pair:
+                            if "b" in payload or "bs" in payload:
+                                bids_list = payload.get("bs") or payload.get("b")
+                                order_books["kraken"][pair]["bids"] = [b[:2] for b in bids_list]
+                            if "a" in payload or "as" in payload:
+                                asks_list = payload.get("as") or payload.get("a")
+                                order_books["kraken"][pair]["asks"] = [a[:2] for a in asks_list]
+        except Exception as e:
+            print("Exception dans kraken_orderbook_updater:", e)
+            await asyncio.sleep(5)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    loop = asyncio.get_running_loop()
+    loop.create_task(binance_orderbook_updater())
+    loop.create_task(kraken_orderbook_updater())
+    yield  # Attente du shutdown
 
 
-        orderbook_placeholder = st.empty()
-        if st.session_state.selected_exchange in st.session_state.orderbook_data and st.session_state.selected_pair in st.session_state.orderbook_data.get(
-                st.session_state.selected_exchange, {}):
-            ob_data = st.session_state.orderbook_data[st.session_state.selected_exchange][
-                st.session_state.selected_pair]
-            bids_df = format_orderbook(ob_data.get('bids', []))
-            asks_df = format_orderbook(ob_data.get('asks', []))
-
-            if not bids_df.empty and not asks_df.empty:
-
-                bids_df = bids_df.sort_values(by='Price', ascending=False)
-                asks_df = asks_df.sort_values(by='Price', ascending=True)
-
-                # Formater les prix et volumes avec plus de décimales pour les cryptos
-                bids_df['Price'] = bids_df['Price'].apply(lambda x: f"{x:.2f}")
-                bids_df['Volume'] = bids_df['Volume'].apply(lambda x: f"{x:.5f}")
-                asks_df['Price'] = asks_df['Price'].apply(lambda x: f"{x:.2f}")
-                asks_df['Volume'] = asks_df['Volume'].apply(lambda x: f"{x:.5f}")
-
-                # TODO voir comment retirer l'index dataframe donc on passe par html ppur le moment
-
-                # st.markdown("<h3 style='color: green;'>Bids 🟢</h3>", unsafe_allow_html=True)
-                # st.dataframe(
-                #   bids_df[['Bid Price', 'Volume']].style.hide(axis="index"),  # Afficher uniquement les colonnes souhaitées
-                #  height=(10 + 1) * 35 + 3
-                # )
-
-                # st.markdown("<h3 style='color: red;'>Asks 🔴</h3>", unsafe_allow_html=True)
-                # st.dataframe(
-                #   asks_df[['Ask Price', 'Volume']].style.hide(axis="index"),  # Afficher uniquement les colonnes souhaitées
-                #  height=(10 + 1) * 35 + 3
-                # )
-
-                bids_html = bids_df[['Price', 'Volume']].to_html(index=False)
-                asks_html = asks_df[['Price', 'Volume']].to_html(index=False)
-
-                # Affichage des Bids sans index
-                st.markdown("<h3 style='color: green;'>Bids 🟢</h3>", unsafe_allow_html=True)
-                st.markdown(bids_html, unsafe_allow_html=True)
-
-                # Affichage des Asks sans index
-                st.markdown("<h3 style='color: red;'>Asks 🔴</h3>", unsafe_allow_html=True)
-                st.markdown(asks_html, unsafe_allow_html=True)
-            else:
-                st.warning("⚠️ Order book data incomplete.")
-        else:
-            st.warning("⚠️ No order book data available.")
-
-    with col2:
-        st.subheader("Price Chart")
-        if st.session_state.selected_exchange and st.session_state.selected_pair:
-            try:
-                kline_data = st.session_state.client.get_klines(
-                    st.session_state.selected_exchange,
-                    st.session_state.selected_pair,
-                    interval=st.session_state.selected_interval,
-                    limit=100
-                )
-                if kline_data and 'candles' in kline_data:
-                    df = pd.DataFrame(kline_data['candles'])
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-                    fig = go.Figure(data=[go.Candlestick(
-                        x=df['timestamp'],
-                        open=df['open'],
-                        high=df['high'],
-                        low=df['low'],
-                        close=df['close']
-                    )])
-                    fig.update_layout(
-                        title=f"{st.session_state.selected_pair} ({st.session_state.selected_interval})",
-                        yaxis_title='Price',
-                        xaxis_title='Time',
-                        xaxis_rangeslider_visible=False
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.warning(
-                        f"No kline data available for {st.session_state.selected_pair} on {st.session_state.selected_exchange}")
-                    st.write("Debug info:", kline_data)
-            except Exception as e:
-                st.error(f"Error fetching kline data: {str(e)}")
-
-# Onglet TWAP Trading
-with tab2:
-    st.subheader("Create TWAP Order")
-    if not api_key:
-        st.warning("Please enter your API key in the sidebar to trade")
-    else:
-        col1, col2 = st.columns(2)
-        with col1:
-            side = st.selectbox("Order Side", ["buy", "sell"])
-            quantity = st.number_input("Total Quantity", min_value=0.0, value=1.0, step=0.1)
-            limit_price = st.number_input("Limit Price", min_value=0.0, value=0.0, step=100.0)
-        with col2:
-            duration = st.number_input("Duration (seconds)", min_value=60, value=300, step=60)
-            slices = st.number_input("Number of Slices", min_value=2, value=5, step=1)
-        if st.button("Submit TWAP Order"):
-            try:
-                response = st.session_state.client.submit_twap_order(
-                    exchange=st.session_state.selected_exchange,
-                    pair=st.session_state.selected_pair,
-                    side=side,
-                    quantity=quantity,
-                    limit_price=limit_price,
-                    duration=duration,
-                    slices=slices
-                )
-                if response:
-                    st.success(f"TWAP order submitted successfully! Order ID: {response['order_id']}")
-                    st.session_state.orders.append(response)
-                else:
-                    st.error("Failed to submit TWAP order")
-            except Exception as e:
-                st.error(f"Error submitting order: {str(e)}")
-
-# Onglet Order History
-with tab3:
-    st.subheader("Order History")
-    if st.session_state.orders:
-        orders_df = pd.DataFrame(st.session_state.orders)
-        for i, order in orders_df.iterrows():
-            status = st.session_state.client.get_twap_order_status(order['order_id'])
-            if status:
-                progress = status['executed_quantity'] / status['total_quantity'] * 100
-                st.progress(progress)
-                st.write(f"Order {order['order_id']}: {progress:.1f}% executed")
-                status_df = pd.DataFrame([status])
-                st.dataframe(status_df)
-    else:
-        st.info("No orders found")
+app = FastAPI(title="Crypto Data & Paper Trading API", lifespan=lifespan)
 
 
-# Fonction asynchrone pour mettre à jour l'order book via WebSocket
-async def update_orderbook():
-    """Récupération des données d'order book via WebSocket"""
-    uri = "ws://localhost:8000/ws/orderbook"  # URL unifiée
+@app.get("/orderbook/{exchange}/{pair}")
+async def get_orderbook(exchange: str, pair: str):
+    """Renvoie l'order book stocké pour une paire donnée"""
+    if exchange not in order_books:
+        print(f"❌ Exchange non trouvé: {exchange}")
+        raise HTTPException(status_code=404, detail="Exchange not found")
+
+    if pair not in order_books[exchange]:
+        print(f"⚠️ Paire non trouvée: {pair} dans {exchange}")
+        print("📋 Contenu actuel de order_books :", json.dumps(order_books[exchange], indent=4))
+        raise HTTPException(status_code=404, detail="Pair not found")
+
+    print(f"📤 Envoi de l'order book {exchange} - {pair}")  # Debug
+    return order_books[exchange][pair]
+
+
+# WebSocket global : renvoie toutes les paires
+@app.websocket("/ws/orderbook")
+async def websocket_orderbook_global(websocket: WebSocket):
+    """ WebSocket qui envoie l'order book en continu """
+    await websocket.accept()
     try:
-        # Affichage pour le debug
-        print(f"🔌 Connecting to WebSocket at {uri}...")
+        print("🔌 Client WebSocket connecté pour l'orderbook global")
+        while True:
+            snapshot = {}
+
+            for exch, pairs_data in order_books.items():
+                snapshot[exch] = {}
+                for p, ob in pairs_data.items():
+                    if "bids" in ob and "asks" in ob and ob["bids"] and ob["asks"]:
+                        snapshot[exch][p] = {
+                            "bids": ob["bids"],
+                            "asks": ob["asks"]
+                        }
+
+            if any(snapshot.values()):
+                print(f"📡 [DEBUG] Envoi WebSocket snapshot : {json.dumps(snapshot, indent=4)}")
+                await websocket.send_text(json.dumps(snapshot))
+
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        print("🔌 Client WebSocket déconnecté")
+    except Exception as e:
+        print(f"❌ Erreur WebSocket: {e}")
+
+
+
+@app.post("/set_active_pair/{exchange}/{pair}")
+async def set_active_pair(exchange: str, pair: str):
+    exchange = exchange.lower()
+
+    if exchange not in active_pair:
+        raise HTTPException(status_code=400, detail="Exchange non supporté")
+
+    # 1) Récupérer la liste des paires sur l’exchange
+    if exchange == "binance":
+        all_pairs = await get_binance_trading_pairs()
+    else:
+        all_pairs = await get_kraken_trading_pairs()
+
+    # On normalise
+    pair_upper = pair.upper()
+    # Vérifier si la paire existe
+    if pair_upper not in [p.upper() for p in all_pairs]:
+        raise HTTPException(status_code=404, detail="Cette paire n'existe pas sur cet exchange.")
+
+    # Mettre à jour la paire active
+    active_pair[exchange] = pair_upper
+
+    # Initialisation du carnet s’il n’existe pas
+    order_books.setdefault(exchange, {})[pair_upper] = {"bids": [], "asks": []}
+
+    return {"message": f"Paire active pour {exchange} mise à jour: {pair_upper}"}
+
+
+class APIClient:
+    def __init__(self, base_url="http://localhost:8000", api_key=None):
+        self.base_url = base_url
+        self.api_key = api_key
+
+    def get_headers(self):
+        return {"X-Token-ID": self.api_key} if self.api_key else {}
+
+    def set_active_pair(self, exchange: str, pair: str):
+        """Définit la paire active pour l'exchange donné."""
+        try:
+            url = f"{self.base_url}/set_active_pair/{exchange}/{pair}"
+            response = requests.post(url, headers=self.get_headers())
+            return response.json() if response.status_code == 200 else None
+        except Exception as e:
+            print(f"Exception in set_active_pair: {e}")
+            return None
+
+    async def websocket_orderbook(self, exchange: str):
+        """Connecte au WebSocket pour suivre l'order book de la paire active."""
+        uri = f"ws://localhost:8000/ws/orderbook/{exchange}"
         async with websockets.connect(uri) as websocket:
-            print("✅ Connected to WebSocket order book stream!")
-            while True:
-                try:
+            print(f"Connected to WebSocket order book stream for {exchange}.")
+            try:
+                while True:
                     data = await websocket.recv()
-                    parsed_data = json.loads(data)
-                    # Affichage réduit pour éviter de surcharger la console
-                    print(f"📩 Order Book Update received: {len(parsed_data)} exchanges")
-                    # Mettre les données dans la file d'attente
-                    orderbook_queue.put(parsed_data)
-                except json.JSONDecodeError as e:
-                    print(f"❌ Error decoding JSON: {e}")
-                    continue
-                await asyncio.sleep(60)  # Petit délai pour éviter de surcharger
-    except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError) as e:
-        print(f"WebSocket connection closed or cancelled: {e}. Reconnecting in 5 seconds...")
-        await asyncio.sleep(5)
-        await update_orderbook()  # Reconnexion
-    except Exception as e:
-        print(f"❌ General WebSocket error: {e}. Reconnecting in 5 seconds...")
-        await asyncio.sleep(5)
-        await update_orderbook()  # Reconnexion
+                    print(f"Order Book Update for {exchange}: {data}")
+            except websockets.exceptions.ConnectionClosed:
+                print("WebSocket connection closed.")
 
 
-# Démarrage du thread pour mettre à jour l'order book
-def start_orderbook_updater():
-    # Configuration du nouvel event loop pour le thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    print("🚀 Starting WebSocket connection to the server...")
+# Stockage des WebSockets clients
+clients = []
+
+
+def get_top_10_levels(order_book):
+    """ Récupère les 10 meilleurs niveaux (bids & asks) """
+    return {
+        "bids": order_book["bids"][:10],
+        "asks": order_book["asks"][:10]
+    }
+
+
+@app.websocket("/ws/orderbook/{exchange}")
+async def websocket_orderbook(websocket: WebSocket, exchange: str):
+    """WebSocket qui envoie l'Order Book de la paire active uniquement."""
+    await websocket.accept()
+    exchange = exchange.lower()
+
     try:
-        loop.run_until_complete(update_orderbook())
+        while True:
+            pair = active_pair.get(exchange)
+            ob = order_books.get(exchange, {}).get(pair, {"bids": [], "asks": []})
+            aggregated = get_top_10_levels(ob)
+            await websocket.send_text(json.dumps(aggregated))
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        pass
+
+
+### =========================
+### Enums et modèles Pydantic
+### =========================
+
+class ClientType(str, Enum):
+    ANONYMOUS = "anonymous"
+    BASIC = "basic_client"
+    PREMIUM = "premium_client"
+
+
+# TWAP side / type d'ordre
+class OrderSide(str, Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+
+# Modèle d'ordre pour le paper-trading
+class TWAPOrderRequest(BaseModel):
+    exchange: str
+    pair: str
+    side: OrderSide
+    total_quantity: float
+    limit_price: float
+    duration_seconds: int
+    slices: int  # nombre de 'tranches' dans la durée
+
+
+# Réponse de création d'ordre
+class TWAPOrderResponse(BaseModel):
+    order_id: str
+    message: str
+
+
+# Modèle d'information d'ordre
+class TWAPOrderStatus(BaseModel):
+    order_id: str
+    exchange: str
+    pair: str
+    side: OrderSide
+    total_quantity: float
+    executed_quantity: float
+    limit_price: float
+    duration_seconds: int
+    slices: int
+    slices_executed: int
+    is_completed: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+# Réponse pour data
+class DataResponse(BaseModel):
+    client_type: ClientType
+    message: str
+    timestamp: str
+    remaining_tokens: float
+    rate_limit: float
+
+
+class StatusResponse(BaseModel):
+    status: str
+
+
+class RegisterResponse(BaseModel):
+    api_key: str
+    client_type: ClientType
+
+
+### =========================
+### Gestion du Rate Limiting
+### =========================
+class TokenBucket:
+    def __init__(self, rate: float, bucket_size: int):
+        self.rate = rate
+        self.bucket_size = bucket_size
+        self.tokens = bucket_size
+        self.last_update = time.time()
+
+    def try_consume(self) -> bool:
+        now = time.time()
+        time_passed = now - self.last_update
+        self.tokens = min(self.bucket_size, self.tokens + time_passed * self.rate)
+        self.last_update = now
+
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+
+
+API_KEY_NAME = "X-Token-ID"
+token_id_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+API_KEYS: Dict[str, Dict] = {}
+DEFAULT_LIMITS = {
+    ClientType.ANONYMOUS: {"rate_limit": 2, "bucket_size": 4},
+    ClientType.BASIC: {"rate_limit": 5, "bucket_size": 10},
+    ClientType.PREMIUM: {"rate_limit": 10, "bucket_size": 20},
+}
+rate_limiters: Dict[str, TokenBucket] = {}
+
+### =========================================
+### Données en mémoire pour Order Books
+### & Paper Trading
+### =========================================
+
+
+
+# Stockage en mémoire des ordres TWAP
+# {order_id: {"request": TWAPOrderRequest, "status": {...}}}
+twap_orders: Dict[str, Dict] = {}
+
+
+### =========================================
+### Fonctions d’authentification & rate limiting
+### =========================================
+async def get_rate_limiter(request: Request, api_key: Optional[str] = Security(token_id_header)):
+    identifier = f"apikey_{api_key}" if api_key in API_KEYS else f"ip_{request.client.host}"
+
+    if identifier not in rate_limiters:
+        client_type = API_KEYS[api_key]["client_type"] if api_key in API_KEYS else ClientType.ANONYMOUS
+        rate_limiters[identifier] = TokenBucket(
+            DEFAULT_LIMITS[client_type]["rate_limit"],
+            DEFAULT_LIMITS[client_type]["bucket_size"]
+        )
+
+    return rate_limiters[identifier], API_KEYS.get(api_key, {}).get("client_type", ClientType.ANONYMOUS)
+
+
+### =========================================
+### Routes / Endpoints
+### =========================================
+
+@app.post("/register", response_model=RegisterResponse)
+async def register(client_type: ClientType):
+    api_key = str(uuid.uuid4())[:8]  # Clé API courte
+    API_KEYS[api_key] = {
+        "client_type": client_type,
+        "rate_limit": DEFAULT_LIMITS[client_type]["rate_limit"],
+        "bucket_size": DEFAULT_LIMITS[client_type]["bucket_size"]
+    }
+    return {"api_key": api_key, "client_type": client_type}
+
+
+@app.get("/status", response_model=StatusResponse)
+async def get_status():
+    return {"status": "operational"}
+
+
+@app.get("/data", response_model=DataResponse)
+async def get_data(request: Request, api_key: Optional[str] = Security(token_id_header)):
+    rate_limiter, client_type = await get_rate_limiter(request, api_key)
+    if not rate_limiter.try_consume():
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    return {
+        "client_type": client_type,
+        "message": "Voici des données limitées",
+        "timestamp": datetime.now().isoformat(),
+        "remaining_tokens": rate_limiter.tokens,
+        "rate_limit": rate_limiter.rate
+    }
+
+
+### =========================================
+### Public Data Endpoints (Candles, Exchanges, Pairs)
+### =========================================
+
+@app.get("/exchanges", tags=["public"])
+async def list_exchanges():
+    """
+    Retourne la liste des exchanges supportés.
+    """
+    return ["binance", "kraken"]
+
+
+@app.get("/exchanges/{exchange}/pairs", tags=["public"])
+async def list_pairs(exchange: str):
+    """
+    Retourne la liste des paires disponibles sur un exchange donné.
+    """
+    if exchange not in ["binance", "kraken"]:
+        raise HTTPException(status_code=404, detail="Exchange not supported")
+    if exchange == "binance":
+        pairs = await get_binance_trading_pairs()
+    else:
+        pairs = await get_kraken_trading_pairs()
+
+    return pairs
+
+@app.websocket("/ws/auth/orderbook/{exchange}")
+async def websocket_orderbook_auth(websocket: WebSocket, exchange: str):
+    # Récupération du token depuis les paramètres de la requête
+    token = websocket.query_params.get("token")
+    if not token or token not in API_KEYS:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    exchange = exchange.lower()
+    try:
+        while True:
+            pair = active_pair.get(exchange)
+            ob = order_books.get(exchange, {}).get(pair, {"bids": [], "asks": []})
+            aggregated = get_top_10_levels(ob)
+            await websocket.send_text(json.dumps(aggregated))
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        pass
+
+
+# Simulation d'un endpoint pour récupérer des chandeliers
+# Ici, on n'a pas implémenté la logique de vrai stockage historique,
+# donc on retourne des données fictives pour illustrer
+# @app.get("/candlesticks", tags=["public"])
+async def get_kraken_klines(session: aiohttp.ClientSession, symbol: str, interval: str = "1m", limit: int = 5,
+                            start_time: Optional[datetime] = None):
+    """
+    Fetch historical kline data from Kraken and format it to match the Binance format.
+    """
+    kraken_symbol = symbol.upper()
+
+
+    # Convert Binance interval format to Kraken interval format
+    interval_mapping = {
+        "1m": "1",
+        "5m": "5",
+        "15m": "15",
+        "30m": "30",
+        "1h": "60",
+        "1d": "1440",
+        "1w": "10080"
+    }
+
+    kraken_interval = interval_mapping.get(interval, "60")  # Default to 1h if interval not found
+
+    params = {
+        'pair': kraken_symbol,
+        'interval': kraken_interval,
+        'count': limit
+    }
+
+    if start_time:
+        params['since'] = int(start_time.timestamp())
+
+    try:
+        async with session.get(BASE_REST_KRAKEN_URL, params=params) as response:
+            if response.status == 200:
+                data = await response.json()
+
+                if "result" in data and kraken_symbol in data["result"]:
+                    candles = [
+                        [
+                            int(k[0]),  # timestamp
+                            float(k[1]),  # open
+                            float(k[2]),  # high
+                            float(k[3]),  # low
+                            float(k[4]),  # close
+                            float(k[6])  # volume (Kraken uses k[6] instead of k[5])
+                        ] for k in data["result"][kraken_symbol]
+                    ]
+
+                    return candles[:limit]  # Return just the list of candles
+                else:
+                    error_msg = f"Symbol not supported on Kraken or data not found: {data}"
+                    print(error_msg)
+                    raise HTTPException(status_code=404, detail=error_msg)
+            else:
+                error_msg = f"Error fetching Kraken klines: Status {response.status}"
+                print(error_msg)
+                raw_response = await response.text()
+                print(f"Raw response: {raw_response}")
+                raise HTTPException(status_code=response.status, detail=error_msg)
     except Exception as e:
-        print(f"❌ Fatal error in WebSocket thread: {e}")
-        # Tentative de récupération via la méthode REST
-        print("⚙️ Switching to REST API for orderbook data")
+        error_msg = f"Exception in fetching Kraken klines: {str(e)}"
+        print(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
-# Démarrage du thread WebSocket avec gestion d'erreur
-try:
-    websocket_thread = threading.Thread(target=start_orderbook_updater, daemon=True)
-    websocket_thread.start()
-    print("✅ WebSocket updater thread started")
-except Exception as e:
-    print(f"❌ Could not start WebSocket thread: {e}")
+async def get_binance_klines(session, symbol: str, interval: str = '1m', start_time: datetime = None, limit: int = 5):
+    """
+    Fetch historical kline data from Binance.
+    """
+    endpoint = "/api/v3/klines"
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'limit': limit
+    }
+
+    if start_time:
+        params['startTime'] = int(start_time.timestamp() * 1000)
+
+    try:
+        async with session.get(f"{BASE_REST_SPOT_URL}{endpoint}", params=params) as response:
+            if response.status == 200:
+                data = await response.json()
+
+                candles = [
+                    [
+                        int(k[0] / 1000),  # timestamp (convert from ms to s)
+                        float(k[1]),  # open
+                        float(k[2]),  # high
+                        float(k[3]),  # low
+                        float(k[4]),  # close
+                        float(k[5])  # volume
+                    ] for k in data
+                ]
+
+                return candles
+            else:
+                raise HTTPException(status_code=response.status,
+                                    detail=f"Error fetching binance klines: {response.status}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Exception in fetching binance klines: {str(e)}")
+
+
+@app.get("/klines/{exchange}/{symbol}", tags=["public"])
+async def get_klines(exchange: str, symbol: str, interval: str = "1m", limit: int = 100):
+    """
+    Fetch real candlestick (kline) data from Binance or Kraken.
+    """
+    if exchange not in ["binance", "kraken"]:
+        raise HTTPException(status_code=404, detail=f"Exchange not supported: {exchange}")
+
+    # Check if the symbol is supported for this exchange
+    # Récupérer la liste
+    if exchange == "binance":
+        all_pairs = await get_binance_trading_pairs()
+    else:
+        all_pairs = await get_kraken_trading_pairs()
+
+    if symbol.upper() not in [p.upper() for p in all_pairs]:
+        raise HTTPException(status_code=404, detail=f"Symbol {symbol} not supported on {exchange}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            if exchange.lower() == "binance":
+                candles = await get_binance_klines(session, symbol.upper(), interval, None, limit)
+            elif exchange.lower() == "kraken":
+                candles = await get_kraken_klines(session, symbol.upper(), interval, limit)
+            else:
+                raise HTTPException(status_code=404, detail=f"Exchange not supported: {exchange}")
+
+        # Standardize the format for frontend consumption
+        formatted_candles = []
+        for candle in candles:
+            formatted_candles.append({
+                "timestamp": candle[0],
+                "open": float(candle[1]),
+                "high": float(candle[2]),
+                "low": float(candle[3]),
+                "close": float(candle[4]),
+                "volume": float(candle[5])
+            })
+
+        return {
+            "exchange": exchange.lower(),
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "candles": formatted_candles
+        }
+    except Exception as e:
+        print(f"Error in get_klines: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching klines: {str(e)}")
+
+
+### =========================================
+### Paper Trading & TWAP
+### =========================================
+
+@app.post("/orders/twap", response_model=TWAPOrderResponse)
+async def create_twap_order(
+        request: Request,
+        twap_request: TWAPOrderRequest,
+        background_tasks: BackgroundTasks,
+        api_key: Optional[str] = Security(token_id_header)
+):
+    """
+    Soumet un ordre TWAP (Time-Weighted Average Price).
+    Nécessite un token_id (ex-api_key).
+    """
+    # Vérif du rate limit
+    rate_limiter, client_type = await get_rate_limiter(request, api_key)
+    if not rate_limiter.try_consume():
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    exch = twap_request.exchange.lower()
+    if exch not in ["binance", "kraken"]:
+        raise HTTPException(status_code=400, detail="Exchange not supported")
+    # On récupère la liste des paires sur l’exchange
+    if exch == "binance":
+        pairs = await get_binance_trading_pairs()
+    else:
+        pairs = await get_kraken_trading_pairs()
+
+    if twap_request.pair.upper() not in [p.upper() for p in pairs]:
+        raise HTTPException(status_code=400, detail="Pair not supported on this exchange")
+
+    # Génération d'un ID d'ordre
+    order_id = str(uuid.uuid4())
+    # Création de la structure interne
+    now = datetime.utcnow()
+    twap_orders[order_id] = {
+        "request": twap_request,
+        "status": {
+            "order_id": order_id,
+            "exchange": twap_request.exchange,
+            "pair": twap_request.pair,
+            "side": twap_request.side,
+            "total_quantity": twap_request.total_quantity,
+            "executed_quantity": 0.0,
+            "limit_price": twap_request.limit_price,
+            "duration_seconds": twap_request.duration_seconds,
+            "slices": twap_request.slices,
+            "slices_executed": 0,
+            "is_completed": False,
+            "created_at": now,
+            "updated_at": now
+        }
+    }
+
+    # Lancement de la tâche en arrière-plan qui gère l'exécution TWAP
+    background_tasks.add_task(execute_twap_order, order_id)
+
+    return TWAPOrderResponse(order_id=order_id, message="TWAP order created")
+
+
+@app.get("/orders/{order_id}", response_model=TWAPOrderStatus)
+async def get_twap_order_status(order_id: str):
+    """
+    Récupérer le statut d'un ordre TWAP existant.
+    """
+    if order_id not in twap_orders:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    return TWAPOrderStatus(**twap_orders[order_id]["status"])
+
+@app.get("/orders", tags=["authenticated"])
+async def list_orders(api_key: Optional[str] = Security(token_id_header)):
+    """
+    Liste tous les ordres TWAP (ouverts ou terminés).
+    Optionnellement, filtre par token (ici, on renvoie tous les ordres car le token n'est pas stocké dans l'ordre).
+    """
+    return [order_data["status"] for order_data in twap_orders.values()]
+
+
+async def execute_twap_order(order_id: str):
+    """
+    Gère l'exécution pas-à-pas de l'ordre TWAP sur la durée spécifiée.
+    Divise la quantité en 'slices' et tente d'exécuter à chaque intervalle.
+    """
+    # On récupère l'objet d'ordre
+    order_data = twap_orders[order_id]
+    twap_req: TWAPOrderRequest = order_data["request"]
+    status = order_data["status"]
+
+    interval = twap_req.duration_seconds / twap_req.slices
+    quantity_per_slice = twap_req.total_quantity / twap_req.slices
+
+    for i in range(twap_req.slices):
+        if status["is_completed"]:
+            break
+
+        await asyncio.sleep(interval)  # On attend le temps d'un 'slice'
+
+        # On regarde le prix actuel dans l'order book
+        # (Simplification: on prend le meilleur ask pour BUY, le meilleur bid pour SELL)
+        ob = order_books[twap_req.exchange].get(twap_req.pair, {})
+        best_ask = float(ob["asks"][0][0]) if ob["asks"] else None
+        best_bid = float(ob["bids"][0][0]) if ob["bids"] else None
+
+        can_execute = False
+        executed_amount = 0.0
+
+        if twap_req.side == OrderSide.BUY and best_ask is not None:
+            # On vérifie que le ask <= limit_price
+            if best_ask <= twap_req.limit_price:
+                can_execute = True
+        elif twap_req.side == OrderSide.SELL and best_bid is not None:
+            # On vérifie que le bid >= limit_price
+            if best_bid >= twap_req.limit_price:
+                can_execute = True
+
+        if can_execute:
+            executed_amount = quantity_per_slice
+            status["executed_quantity"] += executed_amount
+
+        status["slices_executed"] += 1
+        status["updated_at"] = datetime.utcnow()
+
+        # Vérifier si on a tout exécuté
+        if status["executed_quantity"] >= twap_req.total_quantity:
+            status["is_completed"] = True
+            break
+
+    # Si on n'a pas tout exécuté au terme des slices, on considère l'ordre terminé malgré tout
+    status["is_completed"] = True
+    status["updated_at"] = datetime.utcnow()
+
+
+### =========================================
+### Lanceur
+### =========================================
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
