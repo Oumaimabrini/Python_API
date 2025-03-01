@@ -103,7 +103,7 @@ async def binance_orderbook_updater():
         except Exception as e:
             print("❌ Exception dans binance_orderbook_updater:", e)
             await asyncio.sleep(5)
-
+           
 
 async def kraken_orderbook_updater():
     while True:
@@ -473,6 +473,7 @@ async def list_pairs(exchange: str):
 
     return pairs
 
+
 @app.websocket("/ws/auth/orderbook/{exchange}")
 async def websocket_orderbook_auth(websocket: WebSocket, exchange: str):
     # Récupération du token depuis les paramètres de la requête
@@ -719,6 +720,7 @@ async def get_twap_order_status(order_id: str):
         raise HTTPException(status_code=404, detail="Order not found")
 
     return TWAPOrderStatus(**twap_orders[order_id]["status"])
+
 
 @app.get("/orders", tags=["authenticated"])
 async def list_orders(api_key: Optional[str] = Security(token_id_header)):
